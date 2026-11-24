@@ -17,11 +17,11 @@ DayClose 는 macOS 용 **Digital Housekeeping Agent** 다. 디스크 청소기�
 ## 2. 페르소나
 
 **P1 — 주 사용자 (소유자 본인)**: 약국을 운영하는 약사이자 1인 개발자.
-- 기기: MacBook Pro(주 작업), Mac mini(상시 가동 서버 역할, docker 컨테이너 다수), 약국의 Synology NAS(DayClose 범위 밖 — §9 C6). DayClose 는 단일 기기 기준으로 설계.
+- 기기: MacBook Pro(주 작업), Mac mini(상시 가동 서버 역할, docker 컨테이너 다수), 약국의 Synology NAS(DayClose 범위 밖 — §9 C6). DayClose 는 MacBook 과 Mac mini **두 기기에 각각 독립 설치**(§9 C9). 개발 기기는 Mac mini.
 - 작업: 여러 개발 프로젝트(`~/dev/*`)를 동시에 진행, Claude Code·Codex 를 많이 사용 → 스크린샷·다운로드·임시 문서·설치 파일이 매일 쌓인다.
 - 보유 자산: Apple Developer 키(`.p8`, `.p12`, `.mobileprovision`), Android keystore, SSH 키, `.env`, 클라우드 서비스 계정 키, 공동인증서(NPKI).
 - 민감 자료: 약국·환자 관련 자료(처방·조제 관련 문서, 스크린샷). 이 Mac 에 전용 폴더는 없지만 섞여 들어올 수 있으므로 기본 패턴으로 탐지. 외부 전송 절대 금지.
-- 제약: 내장 SSD 245GB 가 자주 가득 참. 외장 SSD(`/Volumes/External`) 상시 연결. launchd 프로세스의 `/Volumes` 접근은 FDA 없으면 멈춤.
+- 제약: 내장 디스크가 작고 자주 가득 참(Mac mini: 내장 245GB + 외장 SSD `/Volumes/External` 상시 연결). 기기마다 디스크 구성이 다르므로 기본값이 특정 구성을 가정하면 안 됨. launchd 프로세스의 `/Volumes` 접근은 FDA 없으면 멈춤.
 - 기대: 매일 저녁 1분 투자, 실수로 중요한 것을 지우지 않는다는 확신, 터미널/에이전트에서도 호출 가능.
 
 **P2 — 코딩 에이전트 (Claude Code / Codex 세션)**: P1 을 대신해 결산을 조회하고 정리 계획을 만들 수 있다. 승인은 할 수 없다(사람 게이트).
@@ -56,7 +56,7 @@ Local-first · AI optional · Human-in-the-loop · Reversible · Incremental · 
 AC: 두 번 실행해도 결과 동일(멱등), 기존 데이터 보존. `DAYCLOSE_HOME` 권한 0700, DB 0600. M1.
 
 **FR-CORE-002 — 기본 스캔 루트.** init 시 `~/Downloads`(downloads), `~/Desktop`(desktop), 스크린샷 저장 위치(`defaults read com.apple.screencapture location`, Desktop 과 다를 때만, screenshots), `~/Documents`(documents), iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs`(icloud_drive), `~/dev`(projects, 파일 단위 항목 없음)를 등록한다. `--no-default-roots` 로 생략.
-AC: 존재하지 않는 경로는 등록하지 않고 경고. `root add/remove/list` 동작. 겹치는 루트(데스크탑·문서 iCloud 동기화)에서 같은 파일이 두 번 기록되지 않음. M1.
+AC: 존재하지 않는 경로는 등록하지 않고 경고. 기본 루트는 모두 홈 기준이며 `/Volumes/*` 를 기본으로 등록하지 않음(기기별 구성은 사용자가 `root add`). `root add/remove/list` 동작. 겹치는 루트(데스크탑·문서 iCloud 동기화)에서 같은 파일이 두 번 기록되지 않음. M1.
 
 **FR-CORE-003 — 증분 변경 감지.** `scan run` 은 직전 상태와 비교해 생성·수정·삭제·이동을 기록한다. 이동은 (dev, inode) 일치로 판정한다.
 AC: 샌드박스에서 파일 생성/수정/삭제/이름변경 각각이 정확히 1개 이벤트로 기록. 변경 없는 재스캔은 이벤트 0. 패키지(`.app` 등)는 하나의 항목. 제외 규칙(`.DS_Store`, `node_modules`, `.git` 내부) 적용. M1.
@@ -283,7 +283,7 @@ AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상�
 - 보안 자산의 일괄 이동·중앙 폴더 집결, 비밀값 자체의 보관(비밀번호 관리자 역할), 시드 구문 보관.
 - 파일 내용 편집·변환.
 - 브라우저 북마크·노트·사진 보관함 정리(CONTEXT 에서 요구되지 않음).
-- 기기 간 DB 동기화·통합 리포트. 단일 기기 설계(다른 기기에서 쓰면 각자 독립 DB).
+- 기기 간 DB 동기화·병합·통합 리포트. 각 기기는 독립 설치(§9 C9). 후보(현재 범위 밖): 규칙·suppression 을 파일로 내보내기/가져오기.
 - **NAS·SMB·원격 보관, 원격/암호화 백업 업로드(age 포함)** — 2026-11-24 소유자 결정으로 범위 제외(“나중”이 아님). 보관은 로컬/외장 폴더만.
 - 유료화·계정·텔레메트리.
 - 클라우드 계정·서버 백엔드, 다중 사용자.
@@ -312,10 +312,10 @@ AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상�
 | C6 | NAS 연결 | 필요 없음. Synology NAS·SMB·원격 암호화 백업은 **비목표**. `archive` 동작은 로컬/외장 보관 폴더로 유지. age 키 보관 질문은 소멸 | §7, FR-AB-*, FR-SV-009, 02·06 |
 | C7 | 공개·라이선스 | 유료화 계획 없음. **MIT 라이선스**(`LICENSE`, © 2026 Lunap Lee), 공개 저장소 `lunapsy/DayClose`. 결과: GPL/AGPL 코드는 복사 불가, 외부 도구로 호출만 | 02 §3, AGENTS.md, 13 |
 | C8 | 서명·공증 | Developer ID 서명·공증 안 함(개인 로컬 빌드). 결과: 재빌드 시 FDA 승인이 풀릴 수 있음 → 고정된 로컬 서명 인증서로 서명, M7 에서 재빌드 후 FDA 유지 실기기 검증 | 02 §4, 12 M7 |
+| C9 | Mac mini 사용 | MacBook·Mac mini 둘 다 사용. **두 개의 독립 설치**: 기기마다 자체 `DAYCLOSE_HOME`·DB·`config.toml`(스캔 루트·`archive.root` 는 기기별)·학습 규칙. `device_id` 로 기기 식별. 동기화·병합 없음(비목표). 결과: ① 한 기기에서 학습한 규칙·suppression 은 다른 기기가 모름 ② 같은 iCloud Drive 파일이 두 기기의 리뷰에 각각 나타남(이미 keep/keep_always/defer 만 허용) ③ 기본값은 디스크 구성을 가정하지 않음(Mac mini 는 작은 내장 + `/Volumes/External`) ④ 개발 기기는 Mac mini | FR-CORE-002, §7, 02 §8.1, 06 §1, 12 |
 
 ### 9.2 미결 사항 (소유자 확인 필요)
 
 | # | 질문 | 현재 기본값 |
 |---|---|---|
-| O1 | Mac mini 에서도 DayClose 를 쓸지, 쓴다면 스캔 루트(서버 데이터·docker 볼륨 제외 권장)와 무인 기기 알림 방식 | 단일 기기 설계, `device_id` 는 모델에 유지 |
 | O2 | 보안 자산을 “백업됨”으로 볼 기준 | 사용자가 `vault annotate` 로 표시한 경우만 `verified`, 그 외 `unknown`. NAS 사본 검증은 비목표로 제외됨 |

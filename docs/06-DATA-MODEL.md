@@ -13,7 +13,7 @@
 - enum: `TEXT` + `CHECK (x IN (...))`. 값 추가는 마이그레이션으로(테이블 재작성 필요 → §7).
 - JSON 컬럼은 이름이 `*_json`, `CHECK (json_valid(x))`.
 - 민감 필드는 이름이 `*_enc`, `BLOB`(§6). 평문 컬럼에 같은 내용 저장 금지.
-- 단일 기기 설계: DB 하나 = 기기 하나. `app_meta.device_id` 와 봉투 `meta.device_id` 는 유지하되 기기 간 병합·동기화 구조는 없다(Mac mini 사용 여부는 PRD 미결).
+- 기기당 DB 하나: MacBook·Mac mini 는 각자 독립 DB(02 §8.1). `app_meta.device_id` 가 기기를 식별하며 행 단위 `device_id` 컬럼은 두지 않는다(한 DB 에 한 기기만 존재). 기기 간 병합·동기화 구조 없음. `protection_rules`·`suppressions`·`policy_rules`·`decisions` 도 기기별이다.
 - 경로는 `os.fsdecode()` 결과 그대로(정규화하지 않음). 파일 동일성 판단은 경로가 아니라 `(dev, inode)` 가 1순위.
 
 ## 2. 엔티티 개요

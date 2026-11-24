@@ -12,6 +12,8 @@
 | 5단계 메뉴바, 자동 실행, 일일 정리 알림 | M7 |
 | 6단계 Claude·Codex Skill, MCP (NAS 연동은 2026-11-24 비목표로 제외) | M8 |
 
+개발 기기: Mac mini(2026-11-24). 사용 기기: MacBook·Mac mini 각자 독립 설치(02 §8.1).
+
 공통 종료 기준(모든 마일스톤): `AGENTS.md` 의 완료 정의(DoD) 충족 — 테스트 녹색, 안전 회귀 스위트 통과, 실제 사용자 파일 미접촉, 명세와 구현 불일치 시 명세 먼저 수정.
 
 ---
@@ -99,7 +101,7 @@ uv run dayclose change list --json
 - FR-SV-001~008, FR-AM-001~002, 004~006 AC 통과.
 - 안전 회귀: 비밀 픽스처 전체 스캔 후 `core.log`, DB 덤프(`.dump`), 모든 stdout 에 비밀 원문 0(11 문서의 누출 스캐너).
 - gitleaks 미설치 환경(PATH 제거)에서도 녹색(경고만).
-- **CLI 읽기 전용 MVP**: 소유자가 실제 `~`에서 `scan run` + `review summary` + `vault health` 를 수동 실행해 볼 수 있는 상태(읽기 전용이므로 허용; 실행은 소유자가 직접).
+- **CLI 읽기 전용 MVP**: 소유자가 두 기기 각각의 실제 `~`에서 `scan run` + `review summary` + `vault health` 를 수동 실행해 볼 수 있는 상태(읽기 전용이므로 허용; 실행은 소유자가 직접).
 
 근거 문서: 05, 04(앱/brew/login 수집 절), 09(앱 인벤토리 소스), 06(§5.3, §6), 11.
 담당: Security(vault), macOS(앱·로그인 항목 소스), File Intelligence(dev cache), QA(누출 스캐너).
@@ -167,7 +169,7 @@ uv run dayclose change list --json
 - 결정: core 배포 방식(앱 번들 동봉 Python vs `~/.local/bin/dayclose`) 확정 — 09 문서에 기록.
 - 로컬 서명 고정: Developer ID·공증 없이 고정 로컬 인증서로 앱·헬퍼 서명(02 §4). 재빌드 후 FDA 유지 여부 실기기 검증.
 
-실행 결과: 실제 기기에서 21:00 예약 실행 → 알림 → 클릭 시 앱 결산 화면. FDA 없는 상태에서 외장 루트가 있어도 제한 시간 내 경고로 종료.
+실행 결과: MacBook·Mac mini 각각에서 21:00 예약 실행 → 알림 → 클릭 시 앱 결산 화면. FDA 는 기기마다 따로 부여·검증. Mac mini 에서 `/Volumes/External` 루트가 있고 FDA 가 없을 때 제한 시간 내 경고로 종료.
 종료 기준: FR-MI-001~004 AC, NFR-REL-001, “셸 실행 vs launchd 실행” 비교 테스트 절차(09) 결과 기록, “재빌드 → FDA 유지” 검증 결과 기록(실패 시 대응 절차를 09 에 명시).
 근거 문서: 09, 03(메뉴바·알림 화면), 11.
 담당: macOS, Integration, QA.

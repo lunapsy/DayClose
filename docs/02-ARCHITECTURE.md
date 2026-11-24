@@ -49,7 +49,7 @@
 | Core 언어 | Python ≥3.13 (개발 기준 3.14) | 1단계 결정 사항. 파일 스캔·SQLite·서브프로세스(git/brew/gitleaks) 오케스트레이션에 충분. |
 | 패키지/실행 | `uv` (`core/pyproject.toml`, `uv.lock`) | 이 머신에 설치됨. 재현 가능한 잠금, `uv run`/`uv tool install` 로 CLI 배포. |
 | CLI 파서 | 표준 `argparse` | 결정: 기동 시간(앱이 프로세스를 자주 띄움)과 의존성 최소화. typer/click 의 import 비용 회피. |
-| DB | SQLite (표준 `sqlite3`), WAL 모드 | 단일 사용자·단일 기기, 서버 불필요. 백업=파일 복사. |
+| DB | SQLite (표준 `sqlite3`), WAL 모드 | 단일 사용자, 기기당 DB 하나(§8.1), 서버 불필요. 백업=파일 복사. |
 | 설정 | TOML (`tomllib` 읽기, `tomli-w` 쓰기) | 사람이 직접 고칠 수 있는 포맷. |
 | 암호화(필드) | `cryptography` AES-256-GCM | 민감 필드 암호화(06 §6). X.509 인증서 파싱도 같은 라이브러리로 처리 → `openssl` CLI 불필요. |
 | 키 보관 | macOS Keychain via `keyring` | 키를 argv/파일에 노출하지 않음(`security -w` 는 argv 노출 위험). |
@@ -347,12 +347,23 @@ Swift 코드는 사용자 파일을 변경하지 않는다(휴지통·이동 포
 
 용량 예산(결정: 내장 디스크 245GB 가 자주 가득 차므로): DB 목표 < 200MB(파일 50만 개 기준). 이를 위해 파일 내용·썸네일은 DB 에 저장하지 않고, `file_events` 는 90일, 종결 항목(`executed`/`undone`/`stale`/`suppressed`)의 세부 이력은 180일 후 압축(06 문서 §8). DayClose 는 1GB 이상 산출물을 만들지 않는다. `archive` 결정의 보관 폴더는 사용자가 지정한 로컬/외장 경로(`archive.root`, 예 `/Volumes/External/DayCloseArchive`).
 
+### 8.1 두 기기 운용 (2026-11-24 확정)
+
+MacBook 과 Mac mini 에 **서로 독립된 설치** 두 개를 둔다. 각 기기는 자체 `DAYCLOSE_HOME`·DB·`config.toml`·학습 규칙·suppression 을 갖고, `device_id`(init 시 생성, `app_meta`·`config.toml`·봉투 `meta`)로 식별된다. 동기화·병합·통합 리포트는 비목표.
+
+- 결과 1: 한 기기에서 만든 규칙·suppression·결정 이력은 다른 기기가 모른다. 같은 결정을 두 번 할 수 있다.
+- 결과 2: iCloud Drive 의 같은 파일이 두 기기 리뷰에 각각 나타난다. iCloud 항목은 `keep`/`keep_always`/`defer` 만 허용(§10.1 예외 2)이므로 파일 변경 충돌은 생기지 않는다.
+- 결과 3: 기본값은 디스크 구성을 가정하지 않는다. 기본 루트는 홈 아래만, `archive.root` 기본값은 빈 값, `/Volumes/*` 경로는 사용자가 기기별로 `root add`·`config set` 한다(Mac mini: 작은 내장 + `/Volumes/External`).
+- 결과 4: DB·설정을 기기 간에 복사하지 않는다. 복사된 DB 는 `app_meta.device_id ≠ config.device_id` 또는 루트 경로 부재로 `core.doctor` 가 경고(`W_DEVICE_MISMATCH`).
+- 개발 기기는 Mac mini. 개발 중 테스트는 샌드박스에서만(AGENTS.md §3).
+- 후보(현재 범위 밖): 규칙·suppression 을 파일로 내보내기/가져오기.
+
 ## 9. 설정 (`config.toml`)
 
 ```toml
 schema_version = 1
 device_id = "dev_5f2c9a1e"          # init 시 생성. 바꾸지 않음
-device_name = "MacBook Pro"
+device_name = "MacBook Pro"        # init 기본값 = 컴퓨터 이름(`platform.node()` 에서 `.local` 제거). 기기별
 
 [review]
 daily_time = "21:00"                # 알림/예약 실행 시각 (M7)
@@ -505,7 +516,7 @@ DayCloseError(code: str, message: str, details: dict = {}, retryable: bool = Fal
 | `E_DB_CORRUPT` | `PRAGMA integrity_check` 실패 |
 | `E_INTERNAL` | 예상치 못한 예외 |
 
-경고 코드: `W_PERMISSION_SKIPPED`, `W_TCC_DENIED`, `W_ROOT_UNAVAILABLE`, `W_TOOL_MISSING`, `W_PROTECTED_SKIPPED`, `W_PARTIAL_SCAN`, `W_TRUNCATED`, `W_CONFIG_UNKNOWN_KEY`, `W_DATALESS_SKIPPED`, `W_HASH_SKIPPED_LARGE`, `W_FIELD_KEY_UNAVAILABLE`.
+경고 코드: `W_PERMISSION_SKIPPED`, `W_TCC_DENIED`, `W_ROOT_UNAVAILABLE`, `W_TOOL_MISSING`, `W_PROTECTED_SKIPPED`, `W_PARTIAL_SCAN`, `W_TRUNCATED`, `W_CONFIG_UNKNOWN_KEY`, `W_DATALESS_SKIPPED`, `W_HASH_SKIPPED_LARGE`, `W_FIELD_KEY_UNAVAILABLE`, `W_DEVICE_MISMATCH`.
 
 예상치 못한 예외는 `E_INTERNAL` + `request_id` 로 봉투에 나가고, 트레이스백은 로그에만(마스킹 후). `--log-level debug` 에서도 봉투에 트레이스백을 넣지 않는다.
 
