@@ -478,6 +478,11 @@ fingerprint_sha256 = hex(HMAC-SHA256(fp_key, file_bytes))
 - 필드 키가 없으면(`W_FIELD_KEY_UNAVAILABLE`) NULL.
 - 저장하지 않는 종류: `crypto_seed_suspected`, `recovery_codes`(06 §5.3 CHECK 가 이 두 종류의 `fingerprint_sha256`·`key_fingerprint`·`cert_subject_enc` 를 NULL 로 강제), Solana 평문 키(§3.10 — kind 는 `crypto_wallet` 이라 CHECK 밖, store 리포지토리 함수가 강제하고 안전 테스트로 고정).
 - 연관 규칙(04 와의 계약): vault 가 자산으로 판정한 엔트리에 대해 **`file_entries.sha256` 을 쓰지 않으며**, 이미 값이 있으면 같은 트랜잭션에서 `sha256=NULL, sha256_mtime_ns=NULL` 로 지운다. intel 의 중복 탐지 후보에서 보안 자산은 이미 빠져 있다(04 §12.1 “보안 자산 아님”). 시드 의심 판정 전에 fs 수집기의 볼륨 간 이동 2차 매칭(04 §2.4)이 해시를 계산했을 수 있으므로 이 삭제 규칙이 필요하다.
+- **평문 해시가 어디에도 살아남지 않는다**(리뷰 #19d, 06 §6·§7):
+  - M3 이후: 해시 저장은 vault 판정 **뒤에만**(06 §6 해시 저장 규칙). 판정 전에 계산한 해시는 메모리에서만.
+  - M2(vault 가 아직 없음): 04 의 중복 탐지가 `file_entries.sha256` 을 저장하기 전에, §3 의 **이름·확장자 신호**(`vault/signals.py: name_matches(path)` — 내용을 읽지 않는 순수 함수, 02 §6 의 예외로 `collect`·`intel`·`policy` 가 import 가능, M2 에 먼저 들어간다)에 일치하는 파일은 해시를 저장하지 않는다. 내용으로만 비밀인 파일(예: 이름이 평범한 `notes.txt`)의 M2 평문 해시는 남을 수 있다 → 0003 마이그레이션(M3)이 적용 직후 한 번, 모든 `file_entries.sha256` 중 `ext` 가 §2.2 클래스 C 확장자이거나 이름 신호에 일치하는 행을 NULL 로 지운다(다음 필요 시 재계산 — 비용은 중복 탐지 재해시뿐).
+  - 마이그레이션 직전 자동 백업(`backups/dayclose-…-pre-v3.db`, 06 §7)에는 M2 의 해시가 그대로 있다 → 0003 적용과 위 NULL 처리가 성공하면 **그 `pre-v3` 백업 파일을 즉시 지우고**(store 소관 — DAYCLOSE_HOME 안 파일), 결과 확인 후의 DB 로 새 백업을 만든다. 결정: 마이그레이션 롤백 수단을 잃는 대가보다 평문 해시가 남는 쪽이 나쁘다(0003 은 테이블 추가뿐이라 롤백 필요성이 낮다). 06 §7 의 백업 규칙에 이 예외를 넣도록 요청.
+  - collect 단계(분류 전)의 로그는 경로를 남기지 않는다 — 그 시점에는 그 파일이 비밀인지 모르기 때문(02 §13 의 “보안 자산 항목은 경로 금지” 규칙이 분류 전에는 적용될 수 없음). collect 로그는 개수·루트 ID·소요 시간만.
 
 ### 7.2 키 지문 `key_fingerprint`
 
@@ -535,7 +540,12 @@ is_security_asset(e) :=
 - `retired` 도 보호한다. 결정: “폐기 표시”는 인벤토리 표시·발견 사항 억제용이지 보호 해제가 아니다. 폐기한 키 파일을 지우는 일은 사용자가 Finder 에서 직접 한다(§14). 이유: DayClose 가 지워 줄 수 있게 하는 순간 “자산 보호 해제 → 휴지통” 2단계 경로가 생기고, 그 경로의 첫 단계는 에이전트도 부를 수 있는 쓰기 명령이다.
 - 참이면 `protection='security_asset'`, `sensitivity='secret'`(06 §3.1).
 - `entry_id=NULL` 자산(홈 바로 아래 파일)은 스캔 루트 밖이라 항목·계획의 대상이 될 수 없다(08 의 `E_PATH_OUTSIDE_ROOTS`). 보호 술어가 필요 없다.
-- 엔트리 단위 `info` 발견 사항만 있는 파일(§3.15 임계값 미만)은 `sensitivity='secret'` 만, `protection` 은 변경 없음.
+- 엔트리 단위 `info` 발견 사항만 있는 파일(§3.15 임계값 미만 — 자산이 아닌 비밀 포함 파일)은 `sensitivity='secret'` 이고 `protection` 은 변경 없음. **`sensitivity=secret` 이 자산 지위 없이 뜻하는 것**(리뷰 #6, 02 §10.1):
+  - `preview_policy=metadata_only`, `ai_policy=none`(06 §3.1) — 미리보기·썸네일·AI 전송 없음.
+  - `allowed_actions` 에서 `archive`·`move` 제거(`blocked_reasons` = `secret_content`) — 비밀이 든 파일을 기기 안 다른 곳(특히 암호화되지 않을 수 있는 보관 폴더)으로 복사·이동하지 않는다. `trash` 는 남는다(비밀을 퍼뜨리지 않음).
+  - 그룹 결정(`decision.set --group`)과 학습 규칙 결정(`actor='rule'`)에서 제외(`W_PROTECTED_SKIPPED{reason:secret_content}`) — 항목 단위 사람 결정만.
+  - 이 파일을 담은 디렉터리의 `move`/`archive` 도 막힌다(08 §7.2.1 `contains_secret_content`).
+  - 해제: 내용이 바뀌어 다음 vault 판정에서 적중이 없어지면 그 엔트리의 `sensitivity` 는 다음 정책 계산에서 원래 값으로 돌아간다(자산과 달리 “한 번 비밀이면 계속” 규칙(§8.1-3)은 적용하지 않는다 — 약한 신호이기 때문). 결정: 이 비대칭은 의도적이다 — 강한 신호(자산)는 내용 변화로 풀리지 않고, 약한 신호는 풀린다.
 
 ### 8.3 리뷰 항목 생성
 
@@ -629,7 +639,8 @@ is_security_asset(e) :=
    - 없으면 insert(`state='open'`, `detected_run_id`).
 3. 이번 run 에서 다시 확인되지 않은 `state <> 'resolved'` 행은 `state='resolved'`, `resolved_at`. 단 그 자산이 이번 run 에서 평가되지 못한 경우(루트 접근 불가·TCC·volume timeout)에는 해소하지 않는다 — “보이지 않음 ≠ 해결”(04 §1.2 와 같은 원칙).
 4. `plaintext_secret` 의 `line_no` 가 바뀌면(내용 편집) 이전 행은 해소, 새 행 생성.
-5. 세션 지표: `vault_new`(이번 리뷰 날짜에 생성된 자산 수), `vault_findings_open`(`state='open'` 이고 severity ≥ `warn` 수) — 06 §5.2 `stats_json` 키.
+5. 세션 지표: `vault_new`(이번 리뷰 날짜에 생성된 자산 수), `vault_findings_open`(`state='open'` 이고 severity ≥ `warn` 수) — 06 §5.2 `stats_json` 키. 그리고 `vault_expiring_soon`(열린 `expiring_soon` 수, 심각도 무관), `vault_expiring_critical`(그중 `critical`, 즉 ≤ 7일), `vault_expiring_min_days`(열린 `expiring_soon` 중 가장 작은 `days_left`, 없으면 null), `vault_expiring_nearest_kind`(그 자산의 kind 표시 문구 — 이름·경로 없음).
+6. **만료 알림**(리뷰 C, 09 가 표시): 일일 알림(FR-MI-003)에 열린 `expiring_soon` 이 1개 이상이면 한 줄 “인증서 만료 임박 N개(가장 가까운 것: <kind_label> D-<n>)”를 넣는다 — `high` 도 포함(일일 알림의 critical 전용 규칙의 예외). 어떤 `expiring_soon` 이 `critical`(≤ 7일)이 되면 **별도 알림**을 하루 1회, 그 발견 사항이 `acknowledged`·`resolved` 되거나 만료될 때까지 보낸다. 알림 문구에는 `masked_name` 도 쓰지 않고 `kind_label` 과 남은 일수만(잠금 화면 노출) — 예 “Apple 배포 인증서 만료까지 5일”. `retired` 자산은 제외(§8.4). 예약 실행의 알림 데이터는 `review.summary` 의 세션 지표(`vault_expiring_soon`, `vault_expiring_critical`, `vault_expiring_min_days`(정수, 없으면 null), `vault_expiring_nearest_kind`(kind 표시 문구만) — 06 §5.2 `stats_json`)에서만 얻는다 — 스케줄 채널은 `scan.run`·`review.summary` 만 부를 수 있다(02 §7). 앱 화면은 `vault.health` 를 쓴다.
 
 ### 9.6 문구 (한국어, 경로·이름 없음 — 마스킹 이름은 화면이 따로 표시)
 
@@ -969,6 +980,9 @@ M3(그리고 M4)에서 사용자 파일이 한 바이트도 바뀌지 않는다�
 | R8 | `skill`/`mcp` 채널에서 보호 항목 `path` null | 10 문서 소관 — 확인 필요 |
 | R9 | 보존 기간 | 반영(06 §8: `missing` 365일, `resolved` 발견 사항 180일). §8.4 |
 | — | `app_meta` 키 `vault.backlog_entry_ids` | 반영(06 §5.1 키 목록) |
+| R10 | (리뷰 #6) `blocked_reason` 에 `secret_content`, 02 §10.1 에 “`sensitivity=secret` → archive/move 불가·그룹 제외” | 02·06 소관 — §8.2 |
+| R11 | (리뷰 #19d) 06 §7 백업 규칙 예외: 0003 적용 성공 후 `pre-v3` 백업 즉시 삭제 + 새 백업, 0003 직후 텍스트·이름 신호 파일의 `file_entries.sha256` NULL 처리. 04: M2 해시 저장 전에 `vault.signals.name_matches` 확인(이 함수는 M2 에 먼저 구현) | §7.1 |
+| R12 | (리뷰 C) 06 §5.2 `stats_json` 키 `vault_expiring_soon`, `vault_expiring_critical`. 09: 일일 알림의 만료 줄과 ≤7일 별도 알림 | §9.5-5·6 |
 
 ### 19.3 남은 위험 (닫지 못함)
 

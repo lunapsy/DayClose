@@ -57,7 +57,7 @@ AGENTS.md §3.1, 02 §10.4 의 규칙을 **세 겹**으로 강제한다. 하나�
 | 픽스처 | 범위 | 동작 |
 |---|---|---|
 | `_real_home_snapshot` | session, autouse | 패치 전에 실제 홈(`pwd.getpwuid(os.getuid()).pw_dir`)과 저장소 경로를 기록. 이후 가드의 금지 목록 기준. |
-| `sandbox` | function, autouse | `tmp_path/{home,user,sys,bin,vol}` 생성. env `DAYCLOSE_SANDBOX=tmp_path`, `DAYCLOSE_HOME=tmp_path/home`, `HOME=tmp_path/user`, `CFFIXED_USER_HOME=tmp_path/user`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `PATH=tmp_path/bin:<원래 PATH>`. `Path.home`·`os.path.expanduser` 패치. `DAYCLOSE_TEST_APPROVE` 는 **기본 미설정**(승인이 필요한 테스트만 `approve_in_tests` 픽스처로 켬). |
+| `sandbox` | function, autouse | `tmp_path/{home,user,sys,bin,vol}` 생성. env `DAYCLOSE_SANDBOX=tmp_path`, `DAYCLOSE_HOME=tmp_path/home`, `HOME=tmp_path/user`, `CFFIXED_USER_HOME=tmp_path/user`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `PATH=tmp_path/bin:<원래 PATH>`. `Path.home`·`os.path.expanduser` 패치. `DAYCLOSE_TEST_APPROVE` 는 **기본 미설정**(승인이 필요한 테스트만 `approve_in_tests` 픽스처로 켬). 표식 파일 `tmp_path/.dayclose-sandbox` 생성(§2.3a). |
 | `_guard_env` | function, autouse | 테스트 시작·끝에 `DAYCLOSE_HOME`·`DAYCLOSE_SANDBOX` 가 `tmp_path` 아래인지 검사. 테스트가 이를 지우거나 바꾸면 실패. |
 | `_audit_guard` | function, autouse | 2겹 감사 훅의 테스트 프로세스 쪽을 켠다(§2.2). |
 | `_no_network` | function, autouse | `socket.connect`·`socket.getaddrinfo` 감사 이벤트에서 AF_UNIX 외 연결 시도 → 실패(NFR-PRIV-002). AI 공급자 테스트는 `allow_loopback(port)` 로 로컬 가짜 서버만 허용. |
@@ -79,7 +79,7 @@ AGENTS.md §3.1, 02 §10.4 의 규칙을 **세 겹**으로 강제한다. 하나�
 | `socket.connect` | §2.1 `_no_network` 와 같음 |
 
 - 가드는 감사 이벤트가 없는 호출(`os.stat`, `os.lstat`)은 막지 못한다 — 3겹(경로 재매핑)이 담당.
-- `DAYCLOSE_SANDBOX` 가 설정됐는데 `DAYCLOSE_HOME` 이 그 밖이면 core 는 시작 단계에서 `E_SANDBOX_VIOLATION`(종료 5). 테스트 `test_sandbox_home_outside_sandbox_rejected`.
+- 샌드박스 자체의 유효성(임시 디렉터리 아래·실제 홈/`/Volumes`/기본 홈과 무관·표식 파일)과 `DAYCLOSE_HOME` 위치는 §2.3a 에서 시작 시 검사한다.
 - 가드 자체 테스트(`safety/test_sandbox_guard.py`): 샌드박스 모드에서 실제 홈 아래 경로(존재하지 않는 임의 이름이라도)로 `open('w')`·`scandir`·`rename` 을 시도하면 즉시 예외, 파일시스템에는 아무 일도 없음(대상 경로는 실제로 만들지 않고 `realpath` 계산만으로 거부되는지 확인 — 거부가 실패하면 쓰기가 일어날 수 있으므로 대상은 `/nonexistent-dayclose-guard-probe/…` 같은 생성 불가 경로를 쓴다).
 
 ### 2.3 3겹: 시스템 위치 재매핑
@@ -99,6 +99,23 @@ collector·executor 가 쓰는 **고정 시스템 경로**는 모두 `common/pat
 | `tool_dir` | (없음 — 절대경로) | `$SANDBOX/bin` (가짜 도구 우선) |
 
 외부 도구 해석(보안 요구 사항, 결정): 프로덕션에서 `run_tool` 은 시스템 도구를 **절대경로**로만 실행한다(`/usr/bin/osascript`, `/usr/bin/defaults`, `/usr/bin/mdls`; `git`·`brew`·`gitleaks` 는 `init`/`doctor` 가 찾은 절대경로를 설정·DB 에 고정). `PATH` 앞쪽에 가짜 `osascript` 를 둔 에이전트가 `native_dialog` 승인을 위조하는 경로를 막기 위함. 샌드박스 모드에서만 `tool_dir` 의 가짜 도구가 우선한다. 02 §6·§10.3-4 에 반영됨. 테스트 `test_fake_osascript_on_path_not_executed`(§4.1).
+
+### 2.3a 샌드박스 유효성 (리뷰 #1, 02 §10.4)
+
+`DAYCLOSE_SANDBOX` 가 설정되면 core 는 시작 시 아래를 **모두** 확인하고, 하나라도 거짓이면 아무 파일도 만들지 않고 `E_SANDBOX_VIOLATION`(종료 5)으로 끝난다. `DAYCLOSE_TEST_APPROVE`·`DAYCLOSE_TEST_NOW`·`DAYCLOSE_TEST_FAULT` 는 유효한 샌드박스에서만 읽는다. `sandbox` 픽스처는 `tmp_path`(사용자 임시 디렉터리 아래)에 표식 파일 `.dayclose-sandbox` 를 만든다.
+
+| 테스트 (`safety/test_sandbox_validity.py`) | 거부 사례 |
+|---|---|
+| `test_sandbox_outside_temp_rejected` | `realpath(DAYCLOSE_SANDBOX)` 가 `confstr(CS_DARWIN_USER_TEMP_DIR)`·`/private/tmp` 밖(예: 저장소 디렉터리) |
+| `test_sandbox_equals_real_home_rejected` | 실제 홈(`pwd.getpwuid().pw_dir`) 과 같음 — 테스트는 실제 홈 경로 **문자열만** 넘기고 core 가 첫 검사에서 거부하는지 본다(그 경로에 어떤 파일 연산도 일어나지 않음을 감사 훅으로 확인) |
+| `test_sandbox_ancestor_of_home_rejected` | 실제 홈의 조상(`/Users`, `/`) |
+| `test_sandbox_home_env_spoof_rejected` | `$HOME` 을 임시 디렉터리로 바꿔 놓고 `DAYCLOSE_SANDBOX` 를 실제 홈으로 — `$HOME` 이 아니라 `pw_dir` 로 판정 |
+| `test_sandbox_contains_volumes_rejected` | `/Volumes` 와 같거나 그 조상 |
+| `test_sandbox_contains_default_home_rejected` | 기본 `DAYCLOSE_HOME`(`~/Library/Application Support/DayClose`)과 같거나 그 조상 |
+| `test_sandbox_marker_missing_rejected` | 임시 디렉터리 안이지만 `.dayclose-sandbox` 없음 |
+| `test_sandbox_symlink_escape_rejected` | 임시 디렉터리 안의 심볼릭 링크가 실제 홈을 가리킴(`realpath` 기준) |
+| `test_sandbox_home_outside_sandbox_rejected` | 유효한 샌드박스인데 `DAYCLOSE_HOME` 이 그 밖 |
+| `test_test_approve_ignored_without_valid_sandbox` | 위 어느 경우든 `DAYCLOSE_TEST_APPROVE=1` 로 `method=test` 승인이 생기지 않음(시작 거부가 먼저) |
 
 ### 2.4 정적 검사로 보강
 
@@ -258,7 +275,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_fr_core_008_icloud_allowed_actions` | 게이트 거짓(저장소 기본)에서 `icloud_drive` 루트 항목과 다른 루트의 dataless 항목 모두 `allowed_actions == [keep, keep_always, defer]`(게이트 참일 때는 §3.10), `blocked_reasons` 의 파일 동작 4개(`trash`,`move`,`archive`,`rename`)가 `icloud_synced`/`dataless`, `trash/move/archive` 결정 → `E_PROTECTED`, 그룹 결정은 건너뜀(`W_PROTECTED_SKIPPED`) |
 | `test_fr_core_008_legacy_placeholder_display_name` | `.계약서.pdf.icloud` → `display_name="계약서.pdf"`, `is_dataless=true` |
 | `test_icloud_synced_desktop_documents` | “데스크탑 및 문서” 동기화 흉내: `user/Desktop`·`user/Documents` 를 `user/Library/Mobile Documents/com~apple~CloudDocs/{Desktop,Documents}` 로 가는 심볼릭 링크로 만들고 `desktop`·`documents` 루트로 등록 → 두 루트 `icloud_synced=1`(04 §1 의 realpath 판정), 그 항목은 `keep/keep_always/defer` 만, `blocked_reasons=icloud_synced`. 동기화가 꺼진 일반 `Desktop` 디렉터리 루트는 `icloud_synced=0` |
-| `test_fr_core_008_nested_roots_no_duplicates` | iCloud 루트 안 `Desktop/` 을 `desktop` 루트로도 등록 → 같은 (dev, inode) 항목 1개, 바깥 루트 순회는 안쪽 루트 경로를 건너뜀(02 §10.6) |
+| `test_fr_core_008_nested_roots_no_duplicates` | iCloud 루트 안 `Desktop/` 을 `desktop` 루트로도 등록 → 같은 (dev, inode) 항목 1개, 바깥 루트 순회는 하위 디렉터리의 `(dev, inode)` 를 다른 루트들과 비교해 건너뜀 — 경로 비교가 아님(02 §10.6, 리뷰 B1). 같은 디렉터리가 다른 경로로 보여도 중복 0 |
 | `test_exclude_globs_relative_to_root` | `**/Library/**` 가 iCloud 루트(`~/Library/Mobile Documents/...`) 자체를 제외하지 않고, 루트 안의 `Library/` 하위만 제외(02 §9) |
 | `test_fr_core_008_app_no_thumbnail_for_dataless` (Swift UI) | dataless 항목은 아이콘만, 썸네일 생성 호출 0, Space 는 경고 후에만(03) |
 
@@ -300,7 +317,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_apply_rejects_hash_mismatch` | `approvals.plan_hash` 를 DB 에서 직접 바꾼 뒤 apply → `E_APPROVAL_MISMATCH`, 트리 불변. |
 | `test_apply_rejects_tampered_operations` | 승인 후 `plan_operations.dst_path` 또는 행 추가를 DB 에서 직접 수행 → apply 는 연산 행에서 `plan_hash` 를 **다시 계산**해 불일치를 거부해야 함. (08 요구 사항 — 저장된 해시끼리 비교만 하면 이 테스트가 실패한다. §11) |
 | `test_test_approval_requires_both_env` | 샌드박스에서 `DAYCLOSE_TEST_APPROVE` 없이 `plan approve` → 즉시 `E_APPROVAL_DENIED`(02 §10.3-1 ②, 테스트 중 실제 대화상자 금지), 가짜 `osascript` 호출 기록 0건. `method=test` 로 승인한 뒤 apply 시점에 `DAYCLOSE_TEST_APPROVE` 를 지우면 `E_APPROVAL_REQUIRED`(08 G4). |
-| `unit/test_approval_method_selection.py` | 수단 선택 순수 함수(`plan/approval.select_method(env, tty_openable, channel, signature_ok, gui)`)의 표 전체: 에이전트 표식(`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` 등 상수 목록 각각) + TTY 가능 → `native_dialog`(TTY 수단 금지); 표식 없음 + TTY → `cli_tty`; 채널 `app` + 서명 검증 성공 → `app_button`, 서명 없음/실패 → 다음 순서(`native_dialog`); 채널 `mcp`·`schedule` → 거부; GUI 없음 → `E_APPROVAL_DENIED{reason:"no_gui"}`. 실제 대화상자·TTY 는 열지 않는다. |
+| `unit/test_approval_method_selection.py` | 수단 선택 순수 함수(`plan/approval.select_method(env, tty_openable, channel, signature_ok, gui)`)의 표 전체: 에이전트 표식(`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` 등 상수 목록 각각) + TTY 가능 → `native_dialog`(TTY 수단 금지); 표식 없음 + TTY + **GUI 세션 없음** → `cli_tty`, 표식 없음 + TTY + GUI 있음 → `native_dialog`(리뷰 B3 — 검증 전 규칙); 채널 `app` + 서명 검증 성공 → `app_button`, 서명 없음/실패 → 다음 순서(`native_dialog`); 채널 `mcp` → `E_APPROVAL_DENIED{channel_not_allowed}`(`schedule` 은 이 함수에 오기 전에 `api` 진입에서 `E_PROTECTED{channel_not_allowed}`); GUI 없음 → `E_APPROVAL_DENIED{reason:"no_gui"}`. 실제 대화상자·TTY 는 열지 않는다. |
 | `unit/test_native_dialog_runner.py` | 대화상자 함수에 가짜 실행기(`run_tool` 대체 callable)를 주입: 반환 `approve`/`deny`/시간 초과/무응답 → 각각 승인/`E_APPROVAL_DENIED`; 요약 텍스트가 `osascript` 의 `--` 뒤 argv 로만 전달되고 스크립트 본문에 없으며, 호출자가 준 문자열(결정 메모 등)이 없고 연산 수·`plan_hash_short` 가 있음(F31). |
 | `test_app_signature_verification` | 테스트 키쌍(`cryptography` EC P-256, 실행 시 생성)으로 `core.app_key` 등록(샌드박스 test 확인) → 올바른 서명 `"dayclose.approve.v1\n"+device_id+"\n"+plan_id+"\n"+plan_hash` 은 검증 성공, 다른 `plan_hash`·다른 `device_id`·변조 서명은 실패 → 선택 함수가 `app_button` 을 고르지 않음. |
 | `test_app_key_unregistered_or_bad_signature_degrades` | (a) 키 미등록 + `app_signature` 있음 (b) 등록 + 잘못된 서명 (c) 등록 + 서명 없음 — 모두 거부하지 않고 다음 순서로 넘어감: 선택 함수 결과 `native_dialog`(TTY 없음) 또는 `cli_tty`(표식 없음+TTY), 샌드박스 통합 테스트에서는 ② 규칙대로 `E_APPROVAL_DENIED`. `app_button` 승인 행 0개. `app-key register/revoke` 는 사람 확인 없이 성공하지 않음(test 승인 외 `E_APPROVAL_DENIED`), MCP 에 `core_app_key` 없음 |
@@ -429,7 +446,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 | 수단 | 쓰는 곳 |
 |---|---|
-| 체크포인트 크래시: executor 의 연산 단계 경계마다 `executor/_checkpoint(name)` 호출. 샌드박스 모드에서 `DAYCLOSE_TEST_FAULT=<name>:<n>`(n번째 도달 시) 이면 `os._exit(137)`(= SIGKILL 과 같은 효과, 정리 코드 미실행) 또는 `raise OSError(errno.X)` | 크래시·ENOSPC·EIO 결정론적 재현. **환경 변수는 02 §15.1 추가 필요**(§11). 체크포인트 이름 목록은 08 이 정한다(예: `op.running_committed`, `op.fs_done`, `xdev.copy_partial`, `xdev.verified`, `xdev.src_removed`, `undo.fs_done`, `migrate.mid`). |
+| 체크포인트 크래시(08 §15.3 이 정의): `executor/_checkpoint(name)` 은 유효한 샌드박스에서만 동작. `DAYCLOSE_TEST_FAULT=<name>:<n>[:exit\|enospc\|eio\|eperm\|exdev]` — n번째 도달 시 `exit`(기본, `os._exit(137)` = SIGKILL 효과) 또는 다음 파일 시스템 호출이 그 errno 로 실패. 이름: `op.running_committed`, `op.dirs_created`, `op.fs_done`, `xdev.copy_partial`, `xdev.tmp_synced`, `xdev.verified`, `xdev.tombstoned`, `xdev.src_removed`, `undo.undoing_committed`, `undo.fs_done`, `undo.xdev.verified`, `recover.op_reconciled`, `approve.confirmed`, `migrate.mid` | 크래시·ENOSPC·EIO·EPERM·EXDEV 결정론적 재현 |
 | 진행 이벤트 기반 SIGKILL: `plan.apply --progress ndjson` 의 k번째 `op_id` 이벤트를 받은 직후 `os.kill(pid, SIGKILL)` | 주입 지점 없는 실제 크래시(체크포인트 누락 검출용) |
 | 실제 환경 조건: `chmod 000`, `chflags uchg`, 16MB 디스크 이미지 가득 채움, `hdiutil detach -force`, 읽기 전용 재마운트 | 커널이 돌려주는 실제 오류 |
 | in-process 패치: `common/paths.probe` 의 `stat` 을 무한 대기로, `EPERM` 반환 래퍼 | 볼륨 행·TCC 거부(실제 재현 불가 — §9 수동 검증으로 보완) |
@@ -442,14 +459,19 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 |---|---|---|---|---|
 | F01 | 연산 `running` 커밋 직후 크래시 | 체크포인트 `op.running_committed` | recover: 원본 존재 → op `pending`(재실행 가능) 또는 08 판정, 유실 0 | FR-EX-006, NFR-SAFE-002 |
 | F02 | rename 완료 후 `done` 커밋 전 크래시 | `op.fs_done` | recover: 목적지 존재·원본 없음 → `done`, `undo_state=undoable` | FR-EX-006 |
-| F03 | 볼륨 간 복사 도중 크래시 | `xdev.copy_partial` | recover: 목적지 부분 파일 제거(executor 가), 원본 보존, op `pending`/`failed`(08) | FR-EX-005 |
-| F04 | 검증 후 원본 삭제 전 크래시 | `xdev.verified` | recover: 양쪽 존재 → 목적지 해시 재검증 후 원본 제거 또는 목적지 제거(08 판정), 유실·중복 0 | FR-EX-005 |
+| F03 | 볼륨 간 복사 도중 크래시 | `xdev.copy_partial`, `xdev.tmp_synced` | recover: 임시 파일 제거, 원본 보존, op `pending` | FR-EX-005 |
+| F04 | 확정 이름변경 후 원본 삭제 전 크래시 | `xdev.verified` | recover: **되감기** — 목적지 해시 재검증 후 목적지 제거, op `pending`(08 §10.3), 유실·중복 0 | FR-EX-005 |
+| F04a | 디렉터리 묘비 단계 크래시 | `xdev.tombstoned` | recover: 목적지 매니페스트 확인 후 묘비 제거 → `done` | FR-EX-005 |
+| F04b | 목적지 폴더 생성 후 크래시 | `op.dirs_created` | 만든 디렉터리는 남고(지우지 않음) op `pending` | |
+| F04c | 볼륨 간 되돌리기 중 크래시 | `undo.xdev.verified` | recover: 원위치 사본 되감기 → `undoable` | FR-EX-006 |
+| F04d | 복구 도중 크래시 | `recover.op_reconciled` | `plan recover` 를 다시 돌리면 같은 결과(멱등) | FR-EX-006 |
+| F04e | 사람 확인 직후·잠금 전 크래시 | `approve.confirmed` | 승인 행 없음, 계획 `draft` 유지 | FR-EX-002 |
 | F05 | 원본 삭제 후 커밋 전 크래시 | `xdev.src_removed` | recover: `done` | |
 | F06 | 임의 지점 실제 SIGKILL | 진행 이벤트 k=1..N | F01~F05 중 하나로 수렴, 유실 0 | NFR-SAFE-002 |
 | F07 | 디스크 가득 참(볼륨 간 이동) | 16MB 이미지 + 20MB 파일 | op `failed`(`E_PARTIAL` 전체 결과), 목적지 잔여물 0, 원본 보존 | FR-EX-005 |
 | F08 | ENOSPC 주입(같은 볼륨 휴지통 디렉터리 생성) | `OSError(ENOSPC)` | op `failed`, 다음 op 계속 | |
-| F09 | 원본 디렉터리 권한 없음 | `chmod 000` 부모 | op `failed`(`E_PERMISSION`), 나머지 계속 | |
-| F10 | 원본 불변 플래그 | `chflags uchg` | op `failed`(`E_PERMISSION`) | |
+| F09 | 원본 디렉터리 권한 없음 | `chmod 000` 부모 | 사전조건이 먼저 잡음: op **`skipped`**(`E_PERMISSION`), 항목 `failed`, 나머지 계속. 사전조건 뒤 파일 호출에서 주입(`op.running_committed:1:eperm`)하면 op `failed` | 08 §15.3 |
+| F10 | 원본 불변 플래그 | `chflags uchg` | op **`skipped`**(`E_PERMISSION`, 사전조건 F3/F5), 항목 `failed` | 08 §15.3 |
 | F11 | TCC 거부 | `EPERM` 래퍼(Desktop 경로) | scan: `W_TCC_DENIED`·루트 `tcc_denied`; apply: `E_TCC_DENIED` 로 op failed | FR-CORE-005 |
 | F12 | 계획 후 내용 수정 | 파일에 1바이트 추가 | op `skipped`, 항목 `stale`, `E_STALE`, 나머지 계속 | FR-EX-003 |
 | F13 | 계획 후 mtime 만 변경 | `os.utime` | F12 와 같음 | FR-EX-003 |
@@ -461,7 +483,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | F19 | 목적지 볼륨 분리 | apply 전 `hdiutil detach` | `E_VOLUME_UNAVAILABLE`, 원본 보존 | FR-EX-005 |
 | F20 | 복사 도중 볼륨 분리 | `xdev.copy_partial` 에서 detach | op `failed`, 원본 보존, 재마운트 후 recover 로 잔여물 정리 | |
 | F21 | 볼륨 응답 없음 | probe 무한 대기 | apply `E_VOLUME_TIMEOUT`, scan `W_ROOT_UNAVAILABLE`, 제한 시간 = `volume_probe_timeout_s`+2초 | FR-CORE-006, NFR-REL-001 |
-| F22 | 읽기 전용 목적지 볼륨 | `-readonly` 재마운트 | op `failed`(`E_PERMISSION`) | |
+| F22 | 읽기 전용 목적지 볼륨 | `-readonly` 재마운트 | op **`skipped`**(사전조건 G8/F5), 항목 `failed` | 08 §15.3 |
 | F23 | 휴지통 비운 뒤 undo | 휴지통 파일 삭제 | `undo_failed`, `E_UNDO_IMPOSSIBLE` | FR-EX-006 |
 | F24 | undo 시 원위치에 새 파일 | | `--on-conflict fail` → `E_DEST_EXISTS`; `rename` → 08 이름으로 복원 | |
 | F25 | 승인 후 보호 등급 상향 | `rule add` | `skipped`(E_PROTECTED) | 02 §10.2-3 |
@@ -476,7 +498,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | F39 | apply 중 SIGINT | 진행 이벤트 1개 후 SIGINT(CLI) / serve 프로세스에 SIGINT | `E_PARTIAL` + `data.resumable=true`(`E_CANCELLED` 아님), 이름변경 중 op 는 `done`, 복사 중 op 는 임시 파일 제거 후 `pending`, 남은 op `pending`, 계획 `executing`, serve 세션 유지. 다시 `plan apply` → 남은 op 만 실행. 또는 `plan cancel` → 남은 op `skipped`, 계획 `partial`/`cancelled` | 08 §7.6.2, §7.7, §7.10 |
 | F40 | undo 중 크래시 | 체크포인트 `undo.undoing_committed`(파일 호출 전), `undo.fs_done`(파일 호출 후) | recover: 앞의 경우 원위치 없음·목적지 있음 → `undoable` 로 되돌림, 뒤의 경우 원위치 있음 → `undone`. 유실 0 | 06 §4.5, 08 §10 |
 | F34 | 필드 암호화 키 없음 | 테스트 키 파일 삭제 | 메모 필드 `null` + `W_FIELD_KEY_UNAVAILABLE`, 나머지 동작 | 06 §6 |
-| F36 | 다른 Mac 의 DB 복사 | (a) 샌드박스 A 의 `dayclose.db` 만 B 로 복사(다른 `config.device_id`) (b) DB 와 `config.toml` 을 함께 복사(device_id 일치) 후 `app_meta.host_uuid_sha256` 을 다른 값으로 바꿔 다른 Mac 을 흉내 | 둘 다: `doctor` 가 `ok=true`, `healthy=false`, `W_DEVICE_MISMATCH`; `plan.create`/`plan.approve`/`plan.apply`(`--dry-run` 포함)/`plan.undo`/`plan.recover` 가 파일 시스템을 건드리기 전에 `E_DEVICE_MISMATCH`(종료 5) + `W_DEVICE_MISMATCH`; `plan.show`/`plan.list`/`audit.list` 는 경고만; 트리·DB 불변. 원 host UUID 는 DB·로그 어디에도 없음(누출 스캐너 needle) | 02 §8.1, §10.3-4a, 08 §7.11 |
+| F36 | 다른 Mac 의 DB 복사 | (a) M1a: 샌드박스 A 의 `dayclose.db` 만 B 로 복사(다른 `config.device_id`) (b) M5: DB 와 `config.toml` 을 함께 복사(device_id 일치) 후 `app_meta.host_uuid_sha256` 을 다른 값으로 바꿔 다른 Mac 을 흉내 | (a) `doctor` 가 `ok=true`, `healthy=false`, `W_DEVICE_MISMATCH`(루트 경로가 없는 것은 `roots[].access="missing"` 로 따로). (b) 위 + `device.host_check="mismatch"`, `plan.create`/`plan.approve`/`plan.apply`(`--dry-run` 포함)/`plan.undo`/`plan.recover` 가 파일 시스템을 건드리기 전에 `E_DEVICE_MISMATCH`(종료 5) + `W_DEVICE_MISMATCH`; `plan.show`/`plan.list`/`audit.list` 는 경고만. 둘 다 트리·DB 불변, 원 host UUID 는 DB·로그 어디에도 없음 | 02 §8.1, §10.3-4a, 08 §7.11, 리뷰 #9 |
 | F37 | 보관 폴더 미설정·소실 | `archive.root=""` 에서 archive 결정 → `E_ARCHIVE_TARGET_MISSING`; 설정 후 계획 → 볼륨 분리 → `plan.create` 시 `excluded`(E_ARCHIVE_TARGET_MISSING), 승인 후 분리 → apply `E_VOLUME_UNAVAILABLE` op failed, 원본 보존 | FR-AB-001 |
 | F38 | 보관 폴더 볼륨 행 | `archive.root` 가 응답 없는 볼륨(probe 무한 대기) | `config set`·`plan.create`·`apply`·`doctor` 모두 `volume_probe_timeout_s`+2초 안에 `E_VOLUME_TIMEOUT`/`access: timeout` | 02 §10.5 |
 | F35 | 시계 역행·시간대 변경 | `clock` 주입 | 리뷰 날짜 계산이 단조성을 요구하지 않고 이월이 중복 증가하지 않음(FR-DR-006 멱등) | FR-DR-002 |
@@ -490,7 +512,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | 테스트 | 조건 | 기준 | 근거 |
 |---|---|---|---|
 | `test_nfr_perf_003_version_startup` | `dayclose version --json` 20회, 첫 회 제외 중앙값·p95 | p95 ≤ 250ms | NFR-PERF-003 |
-| `test_m1_warm_scan_10k` | 1만 엔트리 샌드박스, 변경 없음 재스캔 | ≤ 2초 | 12 M1 종료 기준 |
+| `test_m1_warm_scan_10k` | 1만 엔트리 샌드박스, 변경 없음 재스캔 | ≤ 2초 | 12 M1b 종료 기준 |
 | `test_nfr_perf_001_warm_scan_100k` | `perf_100k`: 10만 엔트리(대부분 0바이트 파일 — 디스크 사용 최소화), 1% 변경 후 재스캔 | ≤ 10초 | NFR-PERF-001 |
 | `test_nfr_perf_002_serve_latency` | serve 에 `review.summary` 100회, `item.list`(limit=200) 100회, DB 는 50만 엔트리·2만 항목을 `store` 함수로 직접 채움 | 각 p95 ≤ 300ms | NFR-PERF-002, 02 §4 재검토 조건 |
 | `test_nfr_disk_001_db_size` | 위 50만 엔트리 DB 에서 `VACUUM` 후 크기 | ≤ 200MB | NFR-DISK-001 |
@@ -513,6 +535,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_args_schema_matches_argparse` | 각 명령의 argparse 정의와 `args` 스키마의 필드 이름·필수 여부·enum 이 일치(드리프트 방지) |
 | `test_fixtures_regenerate_identically` | `scripts/gen-fixtures.py` 결과(정규화 후) == 커밋된 `contracts/fixtures/` |
 | `test_usage_error_is_json` | 알 수 없는 플래그·잘못된 ID 접두사 + `--json` → `E_USAGE` 봉투, 종료 2 |
+| `test_plan_hash_fixtures` | `contracts/fixtures/plan.show.*.json` 마다 `data.canonical` 을 08 §5.1 규칙으로 해시한 값 == `data.plan.plan_hash`; `canonical` 의 키 집합이 08 §5.1 정규 객체와 정확히 같음(빠진 필드·남는 필드 0, 리뷰 B2); 실제 `plan.show` 출력도 같은 검사; `ok-nonutf8` 은 `canonical_recomputable=false` |
 | `test_partial_has_data` | `plan.apply.E_PARTIAL`, `plan.undo.E_PARTIAL` 만 `ok=false` 이면서 `data != null` |
 | `test_serve_transcripts` | `contracts/fixtures/serve/*.jsonl` 재생: ready 첫 줄, id 매칭, 순서 뒤바뀐 응답, 진행 이벤트가 응답 전에만, 제어 메시지, 1MiB 초과 줄, 잘못된 JSON, 중복 id, EOF 드레인 |
 | `test_mcp_tools_snapshot` (M8) | `tools/list` 결과(이름·설명·`inputSchema`·`annotations`)가 스냅숏 픽스처와 동일, 비노출 목록 부재 |
@@ -525,6 +548,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 |---|---|
 | `FixtureDecodingTests` | `contracts/fixtures/**/*.json` 전부 디코딩 성공, 모르는 필드 무시(`*.ok-extra-field.json`), 모르는 enum 값 → `.unknown` |
 | `CoreClientTests` | 가짜 core(스크립트가 `serve` 전사를 재생)로: ready 버전 불일치 → `.versionMismatch`, 응답 순서 뒤바뀜, 진행 이벤트 전달, 타임아웃, 프로세스 종료 시 대기 요청 실패 + 재기동, stdin EOF 시 정상 종료 |
+| `PlanHashFixtureTests` | `DayCloseKit.PlanHash` 가 `contracts/fixtures/plan.show.*.json`(nonutf8 제외)의 `canonical` 로 계산한 해시 == 픽스처의 `plan_hash`(Python 과 같은 파일), `canonical_recomputable=false` 면 서명 경로를 타지 않음 |
 | `ErrorMappingTests` | 02 §11 전체 코드 → 앱 오류 타입 매핑 누락 0 |
 
 ### 8.3 Swift UI (`app/DayCloseUITests/`, M4~)
@@ -614,6 +638,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `/Volumes/External` 행 재현(FDA 없음) | 해당 시 | 필수 |
 | iCloud 자리표시자 비다운로드 | | |
 | V17 “데스크탑 및 문서” 동기화 판정(M4) | | |
+| V22 루트 중첩 `(dev, inode)` 확인(M4) | | |
+| V23 Codex pty 에이전트 표식(M5) | | |
 | iCloud 휴지통 해제 V18~V21(M5, 08 §9.1) | | |
 
 ### 9.7 09 실기기 검증 항목(V1~V16)의 마일스톤 배정
@@ -622,8 +648,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 | 마일스톤 | V 항목 | 이 문서의 관련 절 |
 |---|---|---|
-| M4 | V1(FDA 프로브 정확도), V2(설정 패널 URL), V3(자식 core 가 앱의 FDA 를 따름), V7(FDA 와 iCloud), V9(`metadata_only`·`ephemeral` 열람 후 파일 미개방·QL 캐시), V16(복사된 DB 배너·승인 버튼 비활성), V17(“데스크탑 및 문서” 동기화 판정 — 실패 시 `root set --icloud-synced` 로 대체) | §9.1, §9.3, F36, §3.10 |
-| M5 | V8(`~/.Trash` 와 Finder 되돌려 놓기), V11(Secure Enclave 서명 승인 가능 여부), V18~V21(iCloud 휴지통 해제 근거 — 08 §9.1 의 네 조건, **두 Mac 각각**) | §9.4, §4.1, §3.10 |
+| M4 | V22(“데스크탑 및 문서” 동기화 시 CloudDocs/Desktop 과 ~/Desktop 의 `(dev, inode)` 동일 여부·중복 기록 없음, 리뷰 B1), V1(FDA 프로브 정확도), V2(설정 패널 URL), V3(자식 core 가 앱의 FDA 를 따름), V7(FDA 와 iCloud), V9(`metadata_only`·`ephemeral` 열람 후 파일 미개방·QL 캐시), V16(복사된 DB 배너·승인 버튼 비활성), V17(“데스크탑 및 문서” 동기화 판정 — 실패 시 `root set --icloud-synced` 로 대체) | §9.1, §9.3, F36, §3.10 |
+| M5 | V23(Codex pty 실행 시 에이전트 표식이 보이는지 — 안 보이면 표식 목록 보강, 그때까지 GUI 세션에서는 `cli_tty` 금지, 리뷰 B3), V8(`~/.Trash` 와 Finder 되돌려 놓기), V11(Secure Enclave 서명 승인 가능 여부), V18~V21(iCloud 휴지통 해제 근거 — 08 §9.1 의 네 조건, **두 Mac 각각**) | §9.4, §4.1, §3.10 |
 | M6 | V12(Vision 한국어 OCR) | M6 표 |
 | M7 | V4(헬퍼가 앱 FDA 를 따름), V5(재빌드 후 FDA 유지), V6(헬퍼 번들·알림 도메인), V10(활성화 정책 전환), V13(잠자기 보충 실행), V14(FDA 없는 예약 실행 제한 시간), V15(재빌드 후 SMAppService 상태·다른 서명의 실패 모습) | §9.1, §9.2 |
 
@@ -631,23 +657,37 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 형식: 요구사항 ID → 테스트 이름(AGENTS.md §5 규칙: 이름에 FR ID). 통합 테스트는 `integration/`, 안전은 `safety/`. "종료 기준"은 12 문서 그대로이며 각 줄에 검증 수단을 붙였다.
 
-### M1 — Core 골격 + 스냅샷·변경 감지
+### M1a — 골격·계약·저장소·루트 (스캔 없음, 12 M1a)
 
 | ID | 테스트 |
 |---|---|
-| FR-CORE-001 | `test_fr_core_001_init_idempotent`, `test_fr_core_001_home_0700_db_0600` |
-| FR-CORE-002 | `test_fr_core_002_default_roots_in_fake_home`(downloads·desktop·documents·icloud_drive·projects, iCloud 폴더가 없으면 건너뛰고 경고),  `test_fr_core_002_missing_root_warns`, `test_fr_core_002_screenshot_location_differs`(가짜 `defaults`), `test_fr_core_002_root_add_remove_list` |
+| FR-CORE-001 | `test_fr_core_001_init_idempotent`, `test_fr_core_001_home_0700_db_0600`, `test_init_does_not_scan`(scan_runs 0행, 리뷰 #19g), `test_init_does_not_create_field_key`(리뷰 #19e) |
+| FR-CORE-002 | `test_fr_core_002_default_roots_in_fake_home`(downloads·desktop·documents·icloud_drive·projects, iCloud 폴더가 없으면 건너뛰고 경고), `test_fr_core_002_missing_root_warns`, `test_fr_core_002_screenshot_location_differs`(가짜 `defaults`), `test_fr_core_002_root_add_remove_list`, `test_root_add_max_depth_default_per_kind`(04 표, 리뷰 #19f), `test_root_add_stores_icloud_synced_mode`(플래그 저장만 — 실효값 계산은 M1b), `test_default_roots_never_under_volumes` |
+| FR-CORE-004 | `test_fr_core_004_every_command_envelope`(M1a 명령) |
+| FR-CORE-005 | `test_fr_core_005_doctor_root_access`(tcc_denied 는 EPERM 주입), `test_fr_core_005_tcc_vs_permission_distinct`, `test_doctor_missing_root_is_access_not_device`(루트 경로 없음 → `roots[].access="missing"`, `W_DEVICE_MISMATCH` 아님, 리뷰 #9c) |
+| FR-CORE-007 | `test_fr_core_007_concurrent_writes_one_locked`(M1a 는 `root add` 두 개로; 잠금은 `common/paths.open_state_lock()`, 리뷰 #10) |
+| 02 §8.1 | `test_doctor_device_mismatch_copied_db`(F36 (a) — **device_id 불일치만**, 리뷰 #9b·c) |
+| 02 §10.4 | §2.3a 의 샌드박스 유효성 테스트 전부(리뷰 #1), `test_sandbox_guard.py` |
+| 소유자 전용(리뷰 #19a, M1a 분) | `test_effective_channel_elevation`(에이전트 표식 → `skill`), `test_owner_only_refused_on_agent_channels[core_init, config_set_protected_keys, root_add, root_remove]` — **명시** `--channel skill`·serve `channel=mcp` 에서 `E_PROTECTED{reason:"owner_only"}`(샌드박스 안의 표식 승격만으로는 거부되지 않음, 02 §10.3-4b), DB·설정 불변, `cli` 에서는 성공. `config_set_protected_keys` 는 `protection.*`·`vault.*`·`scan.exclude_globs`·`icloud.*`·`ai.allow_external` 각 키로 파라미터화 |
+| 샌드박스와 승격(02 §10.3-4b) | `test_owner_only_marker_outside_sandbox_refused`(샌드박스 밖 상태를 주입한 실효 채널·거부 판정 순수 함수: 표식만 있어도 `skill` 승격 → 거부, `DAYCLOSE_TEST_*`·`--channel cli` 로 끌 수 없음 — 실제 홈은 건드리지 않음), `test_owner_only_marker_inside_sandbox_allowed`(유효한 샌드박스 + `CLAUDECODE=1`, `--channel` 미지정 → owner-only 명령 성공, 감사 로그 `channel=skill`), `test_owner_only_explicit_channel_inside_sandbox_refused`(유효한 샌드박스 + `--channel skill`/`mcp` 명시 → `E_PROTECTED{owner_only}`). conftest 는 기본으로 표식을 지우지 않는다(실제 개발 환경과 같게). 4b 예외는 소유자 전용 거부에만 적용되고 iCloud trash 채널 조건·`app-key register` 의 app 채널 조건에는 적용되지 않으므로, 그 성공 경로 테스트는 픽스처 `no_agent_markers` 로 표식을 지우거나 채널을 명시한다 |
+| 정적 검사 | `test_no_mutation_outside_executor.py`(쓰기 허용 목록에 `common/paths.py` — `open_state_lock()`), `test_import_boundaries.py`, `test_tests_do_not_reference_real_paths.py`, `test_conftest_guard_present.py` |
+
+종료 기준 검증: pytest·ruff·mypy 녹색 / 샌드박스 거부 사례 전부 `E_SANDBOX_VIOLATION` / 실제 `~` 접근 0(§2) / 계약 픽스처 `core.version.ok`, `root.list.ok`, `error.E_NOT_INITIALIZED`, `error.E_SANDBOX_VIOLATION`(`test_fixtures_regenerate_identically`).
+
+### M1b — fs 수집기·스캔·변경 목록 (12 M1b)
+
+| ID | 테스트 |
+|---|---|
 | FR-CORE-003 | `test_fr_core_003_create_modify_delete_rename_one_event_each`, `test_fr_core_003_rescan_no_events`, `test_fr_core_003_package_dir_single_entry`, `test_fr_core_003_excludes_ds_store_node_modules_git`, `prop_fs_diff`(§5.2) |
-| FR-CORE-004 | `test_fr_core_004_every_command_envelope`(M1 명령) |
-| FR-CORE-005 | `test_fr_core_005_doctor_root_access`(tcc_denied 는 EPERM 주입), `test_fr_core_005_tcc_vs_permission_distinct` |
+| settle(리뷰 #8) | `test_settle_never_suppresses_entries_or_events`(`scan.settle_seconds=60` 이어도 생성 직후 스캔이 `created`, 60초 안의 이름 변경이 `moved` — 엔트리 계보 유지; 12 M1b 데모와 같은 순서). 항목 생성 지연은 M2 |
+| FR-CORE-004 | `test_fr_core_004_every_command_envelope`(M1b 명령 추가) |
 | FR-CORE-006 | `test_fr_core_006_probe_deadline`, `test_fr_core_006_dataless_not_hashed`(`st_flags` 주입) |
 | FR-CORE-007 | `test_fr_core_007_concurrent_scan_one_locked` |
-| FR-CORE-008 | §3.9 의 `test_fr_core_008_*` 전부, `test_exclude_globs_relative_to_root` |
-| 02 §8.1 | `test_doctor_device_mismatch_copied_db`(F36 a·b — host UUID 포함), `test_default_roots_never_under_volumes` |
-| 02 §5.3 root icloud | `test_root_icloud_override_precedence`, `test_root_icloud_assumed_default`(M1 `root add --icloud-synced`), `test_root_set_reevaluates_items`, `test_root_set_not_in_mcp`(M2) |
-| 02 §10.4 | `test_sandbox_home_outside_sandbox_rejected`(샌드박스인데 `DAYCLOSE_HOME` 이 밖이면 시작 거부 `E_SANDBOX_VIOLATION`, 아무 파일도 안 만듦), `test_sandbox_guard.py` |
+| FR-CORE-008(스캔) | §3.9 의 `test_fr_core_008_dataless_never_opened`, `legacy_placeholder_display_name`, `nested_roots_no_duplicates`(`(dev, inode)` 가지치기, 리뷰 B1), `test_exclude_globs_relative_to_root` |
+| 루트 iCloud 판정(리뷰 #9a) | `test_root_icloud_override_precedence`, `test_root_icloud_assumed_default`, `test_icloud_synced_desktop_documents`(루트 실효값만 — 항목 `allowed_actions` 는 M2) |
+| 성능 | `test_m1_warm_scan_10k`(≤ 2초, 측정값 기록) |
 
-종료 기준 검증: pytest·ruff·mypy 녹색(CI 명령 §12) / FR-CORE-008(§3.9) / 루트 기준 상대 제외·겹치는 루트 처리(`test_exclude_globs_relative_to_root`, `test_fr_core_008_nested_roots_no_duplicates`) / 재스캔 이벤트 0(`test_fr_core_003_rescan_no_events`) / 1만 웜 스캔 ≤ 2초(`test_m1_warm_scan_10k`, 측정값 기록) / 실제 `~` 접근 0(§2 전체) / 계약 픽스처 4종 존재(`test_fixtures_regenerate_identically`).
+종료 기준 검증: 재스캔 이벤트 0 / 1만 웜 스캔 ≤ 2초 / `scan.run.ok`·`change.list.ok` 픽스처 / 12 M1b 데모 스크립트가 샌드박스에서 종료 0.
 
 ### M2 — 리뷰 모델 + 보호 정책 + 프로젝트 문맥
 
@@ -668,7 +708,11 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-SO-004 | `test_fr_so_004_repo_file_trash_move_protected`, `test_fr_so_004_dev_cache_item_trash_allowed` |
 | FR-AM-003 | `test_fr_am_003_dirty_repo_item_dirty_count` |
 | FR-PM-001 | `test_fr_pm_001_allowed_actions_matrix` |
-| FR-PM-002 | `test_fr_pm_002_patient_pattern_sensitivity_no_trash`, `test_fr_pm_002_rrn_in_text` |
+| FR-PM-002 | `test_fr_pm_002_patient_pattern_sensitivity_no_trash`, `test_fr_pm_002_rrn_in_text`, `test_rrn_reader_bounded`(`common/textread.read_text_prefix(path, max_bytes)` 가 `scan.content_scan_max_bytes` 넘는 부분을 읽지 않음, 05 §2.2 클래스 C 확장자만, dataless 는 열지 않음, `policy`→`vault` import 없음 — 리뷰 #7) |
+| settle(리뷰 #8) | `test_settle_defers_item_creation_only`(`settle_seconds` 안의 파일은 엔트리·이벤트는 있고 리뷰 항목은 다음 스캔까지 없음, settle 뒤 항목 1개) |
+| 소유자 전용(리뷰 #19a, M2 분) | `test_owner_only_refused_on_agent_channels[rule_remove, suppression_add, suppression_remove, root_set]` — 각각을 명시 `--channel skill`·serve `channel=mcp` 로 실행 → `E_PROTECTED{reason:"owner_only"}`, DB·설정 불변; 같은 명령이 `cli` 에서는 성공 |
+| keep_always 하향(리뷰 #19b, M2) | `test_keep_always_downgraded_on_agent_channel`(명시 skill 채널 → 결정 `keep`, suppression 0행, `W_OWNER_ONLY_DOWNGRADED`; cli 채널은 suppression 생성) |
+| 해시 저장(리뷰 #19d) | `test_no_sha256_for_vault_name_signal_files_pre_m3`(M2 DB·`backups/pre-v3.db` 원시 바이트에 해당 파일 해시 없음), `test_collect_logs_have_no_paths` |
 | FR-PM-003 | `test_fr_pm_003_rule_add_path_prefix_protects`, `test_fr_pm_003_builtin_rule_not_removable`, `test_rule_ids_use_rul_prefix`(`rule.*` 는 `rul_`, `prl_` 를 주면 `E_USAGE`) |
 | 02 §5.3 suppression.add | `test_suppression_add_path_glob_suppresses_open_items`, `test_suppression_never_applies_to_protected` |
 
@@ -703,7 +747,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | NFR-A11Y-001(키보드) | `testKeyboardOnlyGroupReview`, `testAccessibilityAudit` |
 | serve 프로토콜 | `test_serve_transcripts`, `CoreClientTests` |
 
-종료 기준 검증: 09 V1·V2·V3·V7·V9·V16·V17(§9.7) 기기별 기록 / `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
+종료 기준 검증: 09 V1·V2·V3·V7·V9·V16·V17·V22(§9.7) 기기별 기록 / `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
 
 ### M5 — 안전 실행
 
@@ -714,21 +758,33 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-EX-003 | F12~F16 |
 | FR-EX-004 | `test_fr_ex_004_trash_is_rename_to_volume_trash`, `test_fr_ex_004_undo_restores`, `test_no_mutation_outside_executor.py` |
 | FR-EX-005 | `test_fr_ex_005_cross_volume_hash_verified`(`hdiutil`), F03~F05·F07·F19·F20 |
-| FR-EX-006 | F01~F06, F39, F40, `test_fr_ex_006_undo_roundtrip`, `prop_executor`(§5.1) |
+| FR-EX-006 | F01~F06, F39, F40, `test_fr_ex_006_undo_roundtrip`, `prop_executor`(§5.1), `test_undo_reevaluates_protection`(되돌릴 위치가 활성 저장소 안이고 git 추적 중이거나 vault 자산이 됐으면 `undo_failed` + `E_PROTECTED`, 파일 불변 — 리뷰 #15) |
+| 디렉터리 보호(리뷰 #3) | `test_dir_trash_contains_protected_rule`(`~/Downloads/2026-11/처방전모음/` 에 `rule add --protection patient_data` → 상위 `2026-11` 디렉터리 항목의 trash/move/archive 결정 불가 또는 실행 시 `E_PROTECTED{reason:"contains_protected_rule"}`, 파일 불변), `test_dir_item_protection_signal_from_rule_prefix` |
+| 앱 키(리뷰 #4) | 성공 경로 테스트는 에이전트 표식을 지우고 `--channel app` 을 명시한다(4b 예외는 이 조건에 적용되지 않음). `test_app_key_register_marker_skill_refused_in_sandbox`(유효한 샌드박스 + `CLAUDECODE=1`, 채널 미지정 → 실효 `skill` → `E_PROTECTED{owner_only}`), `test_app_key_register_app_channel_only`(cli·skill 승격·mcp → `E_PROTECTED{owner_only}`, app 채널만 확인 단계로 진행; 확인 문구에 "[승인 키 만들기]" 안내 포함) |
+| iCloud 결정 채널(리뷰 #5) | 성공 경로 테스트는 표식을 지우거나 `--channel cli`/`app` 을 명시한다. `test_icloud_trash_marker_skill_refused_in_sandbox`(유효한 샌드박스 + 표식, 채널 미지정 → 실효 `skill` → 항목 지정 iCloud trash `E_PROTECTED{owner_only}`, `plan.create` V3 도 `decisions.channel='skill'` 결정을 제외), `test_icloud_trash_decision_requires_cli_or_app`(게이트 참에서 skill 채널 항목 지정 trash → `E_PROTECTED{owner_only}`; DB 에 `channel='skill'` 결정을 직접 넣고 `plan.create` → V3 가 `excluded`(E_PROTECTED)) |
+| 비밀 내용 파일(리뷰 #6) | `test_secret_content_blocks_move_archive_and_group`(`notes.txt`(plaintext_secret, `protection=none`, `sensitivity=secret`) → `blocked_reasons` 의 move/archive = `secret_content`, 그룹 결정에서 제외(`W_PROTECTED_SKIPPED`), 보관 폴더로 복사되지 않음) |
+| 승인 문구(리뷰 #19c) | `test_approval_text_shows_nondefault_home`(`DAYCLOSE_HOME` 이 기본값이 아니면 대화상자 인자·TTY 요약에 "DayClose 데이터 위치:" 줄, 기본값이면 없음 — 실행기 주입 단위 테스트) |
+| 기기 검사(M5) | F36 (b) host UUID |
+| 하드 링크 보호(08) | `test_hardlink_to_protected_inherits`(보안 자산 파일에 평범한 이름의 하드 링크를 만들고 archive/move/trash 결정 → `E_PROTECTED{reason:"hardlink_to_protected"}`, 보관 폴더에 사본 없음) |
+| 비밀 포함 폴더(08) | `test_dir_contains_secret_content`(하위에 `sensitivity=secret` 엔트리가 있는 폴더의 move/archive → `skipped E_PROTECTED{reason:"contains_secret_content"}`, trash 는 허용) |
+| confirm 검증(08 T53·T54, M7) | `test_confirm_unverified_no_osascript_fallback`(V11 통과 설정에서 헬퍼 없음·서명 없는 성공 출력·`DAYCLOSE_NATIVE` 가짜 → `E_APPROVAL_DENIED{reason:"confirm_unverified"}`, osascript 호출 0) |
+| undo 재평가 확장(리뷰 #15, 08) | `test_undo_reevaluates_protection` 에 현재 위치가 dataless 이거나 iCloud 동기화 경로인 경우 추가 → `undo_failed` + `E_PROTECTED` |
+| app-key revoke | `test_app_key_revoke_any_channel_with_confirmation`(revoke 는 채널 제한 없이 받되 사람 확인 필수) |
+| 만료 지표(05) | `test_session_stats_vault_expiring`(23일 남은 인증서 → `stats.vault_expiring_soon=1`, 5일 → `vault_expiring_critical=1`; `vault_expiring_min_days` = 가장 가까운 만료 일수(5), 만료 발견 사항이 없으면 `null`; `vault_expiring_nearest_kind` = `vault_asset_kind` 값 하나이고, 누출 스캐너 needle(자산 파일명·경로·인증서 subject)이 stats 값 어디에도 없음) |
 | FR-EX-007 | `test_fr_ex_007_audit_list_channel_no_paths` |
 | FR-EX-008 | §3.10 의 `test_fr_ex_008_*`, `test_icloud_propagates_check_constraint`, `test_icloud_gate_constant_false_without_record`, `test_config_allow_trash_owner_only` |
 | FR-AB-001 | `test_archive_unencrypted_warns`, `test_fr_ab_001_archive_root_layout_year_month`(`<root>/<YYYY>/<MM>/<이름>`, 충돌 시 08 규칙), `test_fr_ab_001_archive_decision_rejects_dest`, `test_fr_ab_001_archive_root_unset_missing`, `test_fr_ab_001_cross_volume_archive_hash_verified`(`hdiutil`), `test_fr_ab_001_archive_undo_restores`, F37·F38 |
 | FR-VR-007 | `testApproveBindsDisplayedHash`, `testApplyProgressAndUndo` |
 
-종료 기준 검증: 09 V8·V11·V18~V21(§9.7, 두 Mac) / §3.10 FR-EX-008 테스트 전부(게이트 상수는 V18~V21 기록이 없으면 `False` 유지) / 장애 주입 스위트 F01~F40 녹색, §4.1 승인 무결성 테스트 전부, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
+종료 기준 검증: 09 V8·V11·V18~V21·V23(§9.7, 두 Mac), `test_plan_hash_fixtures`·`PlanHashFixtureTests` 녹색 / §3.10 FR-EX-008 테스트 전부(게이트 상수는 V18~V21 기록이 없으면 `False` 유지) / 장애 주입 스위트 F01~F40 녹색, §4.1 승인 무결성 테스트 전부, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
 
 ### M6 — AI + 학습
 
 | ID | 테스트 |
 |---|---|
-| FR-SO-005 | `test_fr_so_005_ai_disabled_zero_network`, `test_fr_so_005_patient_secret_not_in_payload`(가짜 로컬 공급자) |
+| FR-SO-005 | `test_fr_so_005_ai_disabled_zero_network`, `test_fr_so_005_patient_secret_not_in_payload`(가짜 로컬 공급자), `test_active_repo_local_only_and_project_names_gated`(`active_repo` 항목은 외부 공급자 페이로드에 없음, `ai.send_project_names=false`(기본)면 `projects[]` 이름 없음·true 면 있음 — 리뷰 #17) |
 | FR-SO-006 | `test_fr_so_006_ocr_rrn_sets_patient`(가짜 `dayclose-native` 출력), `test_fr_so_006_ocr_text_encrypted` |
-| FR-PM-004 | `test_policy_ids_use_prl_prefix`(`policy.*` 응답·인자는 `prl_`, `rul_` 를 주면 `E_USAGE`), `test_policy_reject_active_to_disabled`, `test_fr_pm_004_five_trash_decisions_suggest_rule`(임계값은 07), `test_fr_pm_004_active_rule_fills_suggestion_still_needs_approval` |
+| FR-PM-004 | `test_owner_only_refused_on_agent_channels[policy_accept, policy_reject]`(M6 분), `test_policy_ids_use_prl_prefix`(`policy.*` 응답·인자는 `prl_`, `rul_` 를 주면 `E_USAGE`), `test_policy_reject_active_to_disabled`, `test_fr_pm_004_five_trash_decisions_suggest_rule`(임계값은 07), `test_fr_pm_004_active_rule_fills_suggestion_still_needs_approval` |
 | FR-PM-005 | `test_fr_pm_005_gate_strips_none_policy_secret_patient`, `test_leak_ai_payload`, `test_fr_pm_005_ai_requests_metadata_only` |
 | NFR-PRIV-002 | `test_nfr_priv_002_no_network_when_ai_disabled` |
 
@@ -738,7 +794,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 | ID | 검증 |
 |---|---|
-| FR-MI-001~004 | §9.1·§9.2 수동 + `test_fr_mi_004_schedule_channel_never_blocks`(F21 를 `--channel schedule` 로), `test_schedule_cannot_approve` |
+| FR-MI-001~004 | `test_schedule_channel_commands_only`(스케줄러 헬퍼가 부르는 명령이 `scan.run`→`review.summary` 두 개뿐이고 `vault.health` 를 부르지 않는지 가짜 core 로 확인, 알림의 만료 수는 `review.summary.stats.vault_expiring_*` 에서; core 쪽: `schedule` 채널로 그 밖 명령(`plan.approve`·`plan.apply`·`decision.set`·`vault.health` 등 전부) → `api` 진입에서 `E_PROTECTED{reason:"channel_not_allowed"}`, DB 불변, 02 §7), §9.1·§9.2 수동 + `test_fr_mi_004_schedule_channel_never_blocks`(F21 를 `--channel schedule` 로), `test_schedule_cannot_approve`(`E_PROTECTED{channel_not_allowed}`) |
 | NFR-REL-001 | F21 + §9.1 실제 launchd 행 재현 |
 
 종료 기준 검증: 09 V4·V5·V6·V10·V13·V14·V15(§9.7) / 09 의 "셸 vs launchd" 비교 결과와 "재빌드 → FDA 유지" 결과를 **MacBook·Mac mini 각각** PR 에 기록(§9.6).
@@ -762,7 +818,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | 02 §6, 04, 08, 09 | 고정 시스템 경로는 `common/paths.system_path(name)` 경유(§2.3 표) | 02 반영됨, 04·09 의 경로 목록과 §2.3 표 대조 필요 |
 | 02 §14 | `app/DayCloseUITests/` | 반영됨 |
 | 08 | apply 시 해시 재계산·감사 교차·24시간 | 반영됨(08 §7.1 G4~G6) |
-| 08 | **체크포인트 이름 목록**(§6.1 F01~F05·F20·F29·F40 이 쓰는 `op.running_committed`, `op.fs_done`, `xdev.copy_partial`, `xdev.verified`, `xdev.src_removed`, `undo.undoing_committed`, `undo.fs_done`, `migrate.mid`) | **제안**(08 에 이름 정의 없음, 2026-11-24 재확인) — 08 이 정하면 그 이름으로 바꾼다 |
+| 08 | 체크포인트 이름 목록 | 반영됨(08 §15.3) |
 | 04 | `collect/fs` 의 `lstat` 대체 지점(dataless `st_flags` 주입, §3.9) | **남음**(확인 필요) |
 | 05 | 시드 단어 목록 모듈 위치, 합성 주민등록번호 검증 규칙 | **남음**(확인 필요) |
 | 03 | 갤러리 스크롤 성능의 측정 지표·수치 | **남음**(확인 필요) |

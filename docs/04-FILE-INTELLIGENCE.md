@@ -27,7 +27,10 @@
 
 ## 1. 스캔 루트
 
-### 1.1 기본 루트 (`core.init`, FR-CORE-002)
+### 1.1 기본 루트 (`core.init`, FR-CORE-002)와 kind 별 기본값
+
+`core.init` 은 아래 루트를 **등록만** 하고 스캔하지 않는다(리뷰 #19g). 첫 순회는 첫 `scan.run` 이 하며 그것이 기준선(§3.4)이다. 아래 표의 `max_depth`·`file_level` 은 kind 별 기본값이며 `root add` 가 `--max-depth` 없이 호출될 때도 같은 값을 쓴다(리뷰 #19f). `custom` 의 기본값은 `max_depth=6`, `file_level=1`(DerivedData 는 `init` 이 명시적으로 1/0 으로 등록), `vault_extra` 는 05 가 정한 값.
+
 
 | 경로 | `kind` | `max_depth` | `file_level` | 비고 |
 |---|---|---|---|---|
@@ -41,11 +44,11 @@
 
 `vault_extra` 루트(`config.vault.extra_paths`)는 05 가 등록 규칙을 정한다. fs 수집기는 이 루트를 순회하되 **항목은 만들지 않고**(`file_level` 값과 무관) 엔트리만 vault 에 넘긴다.
 
-중첩 루트: 루트 A 가 루트 B 안에 있으면(예: 스크린샷 폴더가 `~/Documents/Screenshots`) 각 엔트리는 **가장 깊은(가장 구체적인) 루트**에 속한다. 바깥 루트의 순회는 안쪽 루트 경로에서 가지치기한다. `root.add` 는 같은 경로 중복을 거부(06 유니크 인덱스)하고, 중첩은 허용한다.
+중첩 루트: 루트 A 가 루트 B 안에 있으면(예: 스크린샷 폴더가 `~/Documents/Screenshots`) 각 엔트리는 **안쪽(더 구체적인) 루트**에 속한다. 가지치기는 **경로 비교가 아니라 identity 비교**로 한다(리뷰 B1): 스캔 시작 시 모든 활성 루트 디렉터리의 `(st_dev, st_ino)` 집합을 만들고, 순회 중 만나는 하위 디렉터리의 `(st_dev, st_ino)` 가 **다른 루트의 것과 같으면** 그 디렉터리에서 멈춘다(그 트리는 그 루트의 순회가 담당). 이유: “데스크탑 및 문서” 동기화에서는 `~/Library/Mobile Documents/com~apple~CloudDocs/Desktop` 과 `~/Desktop` 이 같은 디렉터리를 다른 경로로 가리킬 수 있어, 경로 접두사 비교로는 iCloud Drive 순회가 같은 파일을 한 번 더 기록한다. `root.add` 는 같은 경로 중복을 거부(06 유니크 인덱스)하고, 중첩은 허용한다.
 
 중복 루트 제거(02 §10.6): 스캔 시작 시 각 루트 디렉터리의 `(st_dev, st_ino)` 를 구해, 같은 값을 가진 루트가 둘 이상이면(“데스크탑 및 문서 폴더” iCloud 동기화, 사용자가 같은 폴더를 다른 경로로 두 번 등록 등) **루트 ID 가 가장 작은 것 하나만** 순회하고 나머지는 이번 run 에서 건너뛴다(엔트리 유지, `stats.duplicate_roots`). 심볼릭 링크는 따라가지 않으므로 링크로 연결된 경로는 별도 트리가 되지 않는다.
 
-iCloud 동기화 루트 판정(02 §10.1 예외 2, 06 `scan_roots`): 세 컬럼을 쓴다 — 사용자 지정 `icloud_synced_mode`(`auto`|`yes`|`no`, 기본 `auto`), 실효값 `icloud_synced`(0/1), 실효값의 근거 `icloud_synced_source`(`detected`|`user`|`assumed`). fs 수집기는 **매 scan 시작 시** 루트마다 실효값과 근거를 다시 계산하고, 둘 중 하나가 바뀌었을 때만 UPDATE 한다. 수집기는 `icloud_synced_mode` 를 절대 쓰지 않는다(사용자만 `root add … --icloud-synced`, `root set ROOT_ID --icloud-synced` 로 바꾼다 — 02 §5.3. `root.set` 은 MCP 비노출).
+iCloud 동기화 루트 판정(**M1b, fs 수집기**; 02 §10.1 예외 2, 06 `scan_roots`): 세 컬럼을 쓴다 — 사용자 지정 `icloud_synced_mode`(`auto`|`yes`|`no`, 기본 `auto`), 실효값 `icloud_synced`(0/1), 실효값의 근거 `icloud_synced_source`(`detected`|`user`|`assumed`). fs 수집기는 **매 scan 시작 시** 루트마다 실효값과 근거를 다시 계산하고, 둘 중 하나가 바뀌었을 때만 UPDATE 한다. 수집기는 `icloud_synced_mode` 를 절대 쓰지 않는다(사용자만 `root add … --icloud-synced`(M1a), `root set ROOT_ID --icloud-synced`(M2) 로 바꾼다 — 02 §5.3. `root.set` 은 MCP 비노출). M1b 에서 구현하는 것은 루트 단위 `icloud_synced`·`icloud_synced_source` 계산과 저장(아래 `effective`, `detect`, 루트 수준 실시간 신호 S1·S2)뿐이다.
 
 ```
 effective(root):
@@ -73,7 +76,7 @@ effective(root):
 - S3 파일에 `SF_DATALESS` 플래그(§2.6) — 파일 단위.
 `live_signal_root(root)` 는 S1·S2 를 루트 디렉터리에 적용한 결과다.
 
-**항목에 쓰는 실효 상태**: `allowed_actions`·`blocked_reasons`·제안(§13)·중복 keeper 선택(§12.1)에 쓰는 항목의 `icloud_synced` 는
+**항목에 쓰는 실효 상태(M2 — intel·policy)**: `allowed_actions`·`blocked_reasons`·제안(§13)·중복 keeper 선택(§12.1)에 쓰는 항목의 `icloud_synced` 는
 
 ```
 item.icloud_synced = root.icloud_synced (저장된 실효값) OR S1(item.path) OR S3(item)
@@ -83,7 +86,7 @@ item.icloud_synced = root.icloud_synced (저장된 실효값) OR S1(item.path) O
 
 결과: V17 이 확정되기 전에는 `~/Desktop`·`~/Documents` 가 `auto` 일 때 항상 `icloud_synced=1, source=assumed` 다. 동기화를 쓰지 않는 사용자는 `root set ROOT_ID --icloud-synced no` 로 풀고(source `user`), 이것이 V17 실패 시의 대체 수단이다. `root.list` 는 세 값을 모두 보여 준다(02 §5.3). 결정: 이전 scan 의 값을 이어받지 않는다 — 매 scan 의 결과는 그 scan 의 입력(모드·kind·판정 결과)만으로 정해진다(결정성, 테스트 재현성).
 
-항목 단위 값: intel 은 항목마다 `icloud_synced`(루트 값)와 `is_dataless`(§2.6)를 계산해 넘기고, 항목 JSON 의 같은 이름 필드가 된다(02 §5.6). `allowed_actions`·`blocked_reasons` 는 `policy` 가 02 §10.1 예외 2 의 표로 계산한다:
+항목 단위 값(**M2**; M1b 에는 항목이 없다): intel 은 항목마다 `icloud_synced`(루트 값)와 `is_dataless`(§2.6)를 계산해 넘기고, 항목 JSON 의 같은 이름 필드가 된다(02 §5.6). `allowed_actions`·`blocked_reasons` 는 `policy` 가 02 §10.1 예외 2 의 표로 계산한다:
 - dataless → `trash`/`move`/`archive`/`rename` 모두 불가(`dataless`).
 - `icloud_synced` + 다운로드됨 → `trash` 는 해제 게이트(`policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`)가 참일 때만 허용, 아니면 `icloud_synced`. `move`/`archive`/`rename` 은 v1 에서 허용하지 않는다(`icloud_synced`, 해제 예정 없음 — 확정).
 intel 은 이 값들을 바꾸지 않고 읽기만 한다. 이 문서에서 “trash 가능한 iCloud 항목” 은 위 조건으로 `allowed_actions` 에 `trash` 가 들어 있는 항목을 뜻한다.
@@ -116,10 +119,12 @@ intel 은 이 값들을 바꾸지 않고 읽기만 한다. 이 문서에서 “t
 1. **내장 제외(끌 수 없음)**: `DAYCLOSE_HOME`, `~/Library/Caches/DayClose`, `~/Library/Logs/DayClose`, 모든 `.Trash`/`.Trashes`/`.DocumentRevisions-V100`/`.Spotlight-V100`/`.fseventsd`/`.TemporaryItems`, `.DS_Store`, `._*`(AppleDouble), `Icon\r`. 이유: 자기 자신·시스템 메타데이터를 변경으로 세면 매 스캔이 “변경”이 된다.
 2. **설정 제외**: `config.scan.exclude_globs`(02 §9 기본값). 글롭은 **루트 기준 상대경로**(루트 자신은 빈 경로, 구분자 `/`)에 매칭하며 `**` 는 0개 이상 디렉터리, `*` 는 구분자를 넘지 않는다(02 §9). 그래서 `**/Library/**` 는 iCloud Drive 루트(`~/Library/...` 아래) 자체가 아니라 루트 **안쪽**의 `Library` 폴더만 제외한다. 디렉터리가 `<글롭>/**` 형태에 일치하면 그 디렉터리 내부만 제외하고 디렉터리 엔트리 자체는 남긴다(예: `node_modules` 디렉터리는 엔트리로 남고 내용은 순회하지 않음 → §10 개발 캐시가 크기를 따로 잰다).
 3. **git 작업 트리 가지치기**: `projects` 가 아닌 루트에서 `.git`(디렉터리 또는 `gitdir:` 파일)을 가진 디렉터리를 만나면, 그 디렉터리를 `kind='dir'` 엔트리로 남기고 **내부를 순회하지 않는다**. 그 경로는 `collect.git` 의 탐지 후보로 넘긴다(§8.1). 이유: 저장소 내부 파일은 어차피 이동·휴지통 제안 대상이 아니고(FR-SO-004), 수천 개의 소스 파일이 결산을 덮는다.
-4. **작성 중 파일(settle)**: 다음 중 하나면 이번 스캔에서 **엔트리를 만들지도 갱신하지도 않는다**(없는 것으로 취급하되 기존 엔트리 삭제 판정에서도 제외):
+4. **작성 중 파일(settle) — 제외 규칙이 아니다.** 02 §9 의 의미를 따른다: settle 은 **항목 생성만** 미룬다(M2). 수집기(M1b)는 작성 중 파일도 다른 파일과 똑같이 엔트리를 만들고 갱신하며 이벤트(`created`/`modified`/`moved`/`deleted`)를 기록한다. “작성 중” 판정은 아래 중 하나:
    - 확장자 `crdownload`, `download`(Safari 다운로드 패키지), `part`, `partial`, `opdownload`, `tmp`, `!ut`, `aria2`
-   - `now - mtime < scan.settle_seconds`(기본 60초)
-   결정: 다음 스캔에서 완성된 파일이 `created` 로 잡힌다. 이유: 다운로드 중인 파일을 “새 파일”로 두 번 세지 않기 위함(Binky 의 stable-file gate 아이디어, 13 문서).
+   - `now - mtime < scan.settle_seconds`(기본 60초; `now` 는 `common/clock`)
+   이 판정은 §4 의 항목 생성 단계에서만 쓴다: 작성 중인 엔트리는 이번 run 에서 항목을 만들지 않고 **보류 후보**로 남으며, 이후 run 에서 작성 중이 아니게 되는 첫 run 에 항목이 된다(§4 “보류된 항목 생성”). 이유: 다운로드 중인 파일을 반쯤 받은 상태로 결재함에 올리지 않기 위함(Binky 의 stable-file gate 아이디어, 13 문서).
+   결정 이유(리뷰 #8): 엔트리 자체를 숨기면 settle 시간 안에 이름이 바뀐 파일이 “옛 경로 vanished + 새 경로 숨김”이 되어 `deleted` → 다음 run `created` 로 계보가 끊기고 `keep_always`(엔트리 계보 매칭)와 열린 항목을 잃는다. 엔트리를 항상 기록하면 같은 경우가 identity 매칭으로 `moved` 1건이 되어 계보가 유지된다(§15 E7, E7a).
+   테스트: M1b 의 이벤트 테스트·데모는 settle 의 영향을 받지 않는다. M2 의 항목 생성 테스트는 `scan.settle_seconds=0` 또는 주입한 시계로 mtime 경과를 만든다.
 
 ### 2.3 패키지 디렉터리
 
@@ -179,7 +184,7 @@ seen 되지 않은 이전 엔트리 → 보류 목록 vanished
 4. 이전 경로가 이번 관측에 **존재하지 않는다**.
 
 추가 규칙:
-- **보이지 않음 ≠ 삭제**: 이전 엔트리의 경로가 (a) 이번에 건너뛴 루트, (b) 권한 오류로 건너뛴 하위 트리, (c) settle 중 파일, (d) `max_depth` 가 줄어 이번에 들어가지 않은 깊이 아래에 있으면 vanished 에 넣지 않는다(present 유지, `last_seen_run_id` 미갱신).
+- **보이지 않음 ≠ 삭제**: 이전 엔트리의 경로가 (a) 이번에 건너뛴 루트, (b) 권한 오류로 건너뛴 하위 트리, (c) dataless 디렉터리 아래(§2.6), (d) `max_depth` 가 줄어 이번에 들어가지 않은 깊이 아래에 있으면 vanished 에 넣지 않는다(present 유지, `last_seen_run_id` 미갱신).
 - 디렉터리(`kind='dir'`)는 `created`/`deleted`/`moved` 만 기록하고 `modified` 는 기록하지 않는다. 이유: 하위 변경마다 디렉터리 mtime 이 바뀌어 잡음이 된다.
 - 디렉터리가 `moved` 되면 그 하위 엔트리는 경로 접두사만 바뀐 것이므로 하위마다 `moved` 이벤트를 만들지 않고 경로만 일괄 갱신한다(이벤트는 디렉터리 1건). 결정: FR-CORE-003 “이름변경 1건 = 이벤트 1개”를 폴더에도 적용.
 - 대소문자만 다른 이름변경(APFS 대소문자 무시 볼륨): 같은 inode, 다른 경로 → `moved`.
@@ -212,6 +217,7 @@ SHA-256 은 **지연 계산**한다. 모든 파일을 해시하지 않는다.
 - `size > config.scan.hash_max_bytes`(64MB) → 계산하지 않음, `W_HASH_SKIPPED_LARGE`(count). 중복 탐지 제외.
 - dataless(§2.6) → 계산하지 않음.
 - 0바이트 파일 → 해시하지 않고 중복 탐지 제외.
+- **보안 자산 후보의 평문 해시 금지**(06 §6, 리뷰 #19d): `file_entries.sha256` 은 vault 판정이 끝난 뒤에만 저장한다(M3 부터 §0 순서로 보장). vault 가 없는 **M2** 에서는 05 §2.2 의 이름·확장자 신호 — `vault/signals.py: name_matches(path)`(파일 I/O 없는 순수 함수, M2 에 먼저 구현, 02 §6 의 모듈 경계 예외로 `collect`·`intel`·`policy` 가 import) — 에 일치하는 파일의 해시를 **계산하지도 저장하지도 않고** 중복 탐지에서 뺀다. 이유: M2 에 저장한 평문 해시가 0003 마이그레이션 직전 자동 백업(`pre-v3.db`)에 남는다.
 - 한 run 의 총 해시 바이트 예산 `scan.hash_budget_bytes`(기본 2 GiB). 초과분은 다음 run 으로 미루고 `W_TRUNCATED`. 우선순위: 새 항목 후보 → 크기가 큰 순.
 - 읽기: 1 MiB 버퍼, `open(path, 'rb')` (읽기 전용 — 02 §6 변경 금지 규칙에 해당하지 않음). 읽는 중 `mtime` 이 바뀌면 결과 폐기.
 - 결과 저장: `sha256`, `sha256_mtime_ns = mtime_ns`.
@@ -224,23 +230,34 @@ FR-CORE-008, 02 §10.6. **어떤 단계도 iCloud 다운로드를 유발하지 �
 - `st_flags & SF_DATALESS (0x40000000)` — `lstat` 결과의 플래그만 본다(`lstat` 은 다운로드를 유발하지 않는다).
 - 또는 구형 자리표시자 이름 `.<원래 이름>.icloud`.
 
-**모든 내용 읽기는 이 판정 뒤에만 한다.** `open()` 을 부르는 곳은 아래 목록이 전부이며, 각 호출 직전에 `is_dataless` 를 다시 확인한다(한 번 판정한 뒤 시간이 지났을 수 있으므로). dataless 이면 그 단계는 결과 없음으로 처리한다.
+**모든 내용 읽기는 이 판정 뒤에만 한다.** `open()` 을 부르는 곳은 아래 목록이 전부이며(주민등록번호 탐지는 `common` 의 bounded reader `common/textread.py: read_text_prefix(path, max_bytes)` 를 쓴다 — 아래 §2.6a), 각 호출 직전에 `is_dataless` 를 다시 확인한다(한 번 판정한 뒤 시간이 지났을 수 있으므로). dataless 이면 그 단계는 결과 없음으로 처리한다.
 
 | 내용 읽기 지점 | dataless 일 때 |
 |---|---|
 | SHA-256 (§2.5, 중복·볼륨 간 이동) | 계산 안 함, `sha256` NULL. 중복·이동 2차 매칭 제외 |
 | 매직바이트 16바이트 (§5) | 확장자로만 판정 |
+| 주민등록번호 탐지(`policy`, M2 — 규칙은 07 §3.1) | 읽지 않음. 그 항목은 이 신호 없이 판정(07 §3.1 의 dataless → `personal`) |
 | xar 목차 (§7.2), zip 중앙 디렉터리 (§7.3), PNG IHDR (§12.2) | 판정 안 함(제안 없음) |
 | vault 내용 검사·gitleaks (05) | 05 규칙 — 이름·확장자·위치 판정만 |
 | OCR·텍스트 추출 (§6.1) | 안 함 |
 | `mdls` (§2.7, §6, §11.1) | 허용(Spotlight 메타데이터는 로컬) |
 
-추가 규칙:
+dataless 추가 규칙:
 - **dataless 디렉터리**(플래그가 디렉터리에 붙은 경우)는 `scandir` 하지 않는다. 디렉터리 목록을 받아 오는 것 자체가 네트워크 조회를 일으킬 수 있기 때문이다. 디렉터리 엔트리만 남기고 하위는 “보이지 않음 ≠ 삭제”(§2.4)로 처리, `stats.dataless_dirs`.
 - 엔트리·이벤트는 정상 기록(메타데이터는 로컬에 있음). APFS 는 dataless 파일에도 논리 크기를 보고하므로 `size_bytes` 는 그 값.
 - 다운로드됨 ↔ dataless 전환(같은 inode, 플래그만 변함, size·mtime 동일)은 **이벤트가 아니다**. `flags` 만 갱신한다. 전환 후 기존 `sha256` 은 유지하되 다시 계산하지 않는다.
 - 구형 자리표시자 `.<name>.icloud` 가 사라지고 같은 디렉터리에 `<name>` 이 나타나면(다운로드 완료) 같은 엔트리로 보고 경로만 갱신, 이벤트 없음. 반대 방향도 같다.
 - 항목 생성은 가능(메타데이터 기반). 집계 `W_DATALESS_SKIPPED`(count). 허용 동작은 `keep`/`keep_always`/`defer` 만(02 §10.1 예외 2, 위치·게이트 무관) → 제안도 이 안에서만(§13).
+
+### 2.6a 주민등록번호 탐지용 내용 읽기 (M2, 리뷰 #7)
+
+판정 규칙의 소유는 `policy`(07 §3.1)이고, 04 는 읽기 지점만 정한다.
+- 읽는 함수: `common/textread.py: read_text_prefix(path, max_bytes) -> bytes | None`. `vault` 에 의존하지 않는다(M2 에는 vault 가 없음). `open` 직전에 `is_dataless` 를 다시 확인하고 dataless 면 `None`. `O_RDONLY` 로 열어 앞 `max_bytes` 바이트만 읽고 닫는다. 읽는 동안 mtime 이 바뀌면 `None`(다음 run 에 다시).
+- 대상: `file_level=1` 루트에서 이번 run 에 `created`/`modified` 된 엔트리 중 확장자가 05 §2.2 클래스 C 의 텍스트 확장자 집합에 속하는 파일. 앞 8 KiB 에 NUL 이 있으면 바이너리로 보고 중단(05 클래스 C 와 같은 판정).
+- 상한: `scan.content_scan_max_bytes`(리뷰 결정의 새 키). 초과 부분은 읽지 않는다.
+- 기준선 run(§3.4)에서는 하지 않는다(05 클래스 C 의 기준선 규칙과 같음).
+- `config.protection.detect_rrn_in_text=false` 면 읽지 않는다.
+- 읽은 바이트는 패턴 판정 후 즉시 버린다. 일치 문자열·줄 번호·해시를 저장·로그하지 않는다.
 
 ### 2.7 다운로드 출처
 
@@ -278,7 +295,7 @@ effective_time(moved/deleted) = this_scan_started_at
 
 ### 3.4 기준선(첫 스캔)
 
-`trigger='init'` 이거나 루트가 처음 순회되는 run 은 **기준선**이다.
+루트가 처음으로 성공적으로 순회되는 run 은 그 루트의 **기준선**이다(`init` 은 스캔하지 않으므로 기준선은 첫 `scan.run`, 또는 나중에 `root add` 한 루트의 첫 순회).
 - 모든 관측을 `created` 이벤트 없이 엔트리로만 저장한다(이벤트 0, `stats.baseline_entries`).
 - 항목은 `review_date(birthtime) == 오늘의 리뷰 날짜` 인 파일에 대해서만 만든다(§4 규칙 적용). 결정: 설치 첫날 수천 개의 과거 파일로 결재함을 채우지 않는다. 과거 누적분 정리는 비목표(PRD §7, 청소기 영역).
 
@@ -293,7 +310,7 @@ effective_time(moved/deleted) = this_scan_started_at
 | 루트 `file_level=0` (`projects`, DerivedData `custom`) | 파일 항목 없음. 개발 캐시(§10)·저장소(§8.4) 항목만 |
 | `vault_extra` 루트 | 없음(vault 인벤토리만, 05) |
 | `created`, depth 1 (루트 바로 아래) `file`/`package` (`symlink` 는 엔트리만, 항목 없음) | **예** |
-| `created`, depth 1 `dir` | **예**, category `folder` (하위 파일은 개별 항목 없음) |
+| `created`, depth 1 `dir` | **예**, category `folder` (하위 파일은 개별 항목 없음). 보호 등급은 디렉터리 자신과 **그 아래**를 함께 본다(아래 “디렉터리 항목의 보호 신호”) |
 | `created`, depth ≥ 2, 조상 depth-1 디렉터리가 이번 run 에 함께 `created` 되었거나 열린 `folder` 항목임 | 아니오 (폴더 항목에 포함) |
 | `created`, depth ≥ 2, `downloads`/`desktop`/`screenshots` 루트, 기존 하위 폴더 안 | **예** |
 | `created`, depth ≥ 2, `documents`·`icloud_drive` 루트 | 아니오. 결정: Documents·iCloud Drive 하위 폴더에 저장된 파일은 이미 사용자가 정리한 것. 델타 지표에는 포함. 이유 추가: 두 루트는 트리가 커서(수만~수십만 엔트리) 깊은 파일까지 항목으로 만들면 결재함이 넘친다 |
@@ -301,10 +318,13 @@ effective_time(moved/deleted) = this_scan_started_at
 | `moved`, 같은 루트 안 | 아니오. 열린 항목이 있으면 `subject_path` 갱신 |
 | `moved`, 루트 밖으로 / `deleted` | 열린 항목 → `stale` (06 §4.1) |
 | `modified` | 아니오. 열린 항목의 크기·mtime 갱신, `sha256` 무효화 → 중복 그룹 재계산 |
-| settle 중, dataless 라도 | dataless 는 항목 생성 가능(메타데이터 기반), settle 중은 다음 run |
+| 작성 중(settle, §2.2-4) | 이번 run 에서는 항목 없음(엔트리·이벤트는 기록됨). **보류된 항목 생성**: 매 run 의 항목 생성 단계는 이번 run 의 이벤트 외에, 항목 생성 사유 이벤트(`created`, 다른 루트로의 `moved`)가 있었으나 그 이벤트 이후 `review_items` 행이 한 번도 만들어지지 않은 `present=1` 엔트리도 후보로 본다. 작성 중이 아니게 된 첫 run 에 위 규칙(depth·루트 kind 등)을 **현재 경로·이름 기준**으로 적용해 항목을 만든다. 같은 루트 안 이름변경(`.crdownload` → 완성 이름)은 보류를 깨지 않는다 — 사유 이벤트는 처음의 `created` 다. 보류 후보 조회는 `file_events.detected_at` 최근 14일로 제한(그보다 오래 작성 중인 파일은 항목화하지 않음, `stats.settle_expired`) |
+| dataless | 항목 생성 가능(메타데이터 기반) |
 | 보안 자산(05 판정) | vault 가 `security_asset` 항목을 만든다(05). intel 은 카테고리만 `security_asset` 로 확정 |
 | 열린 `decided` 항목(결정 후 계획 전)의 파일이 `modified` | 새 항목 없음, 상태 유지. 스냅샷 필드만 갱신. `plan.create` 가 “결정 후 내용 변경”으로 제외하면서 `last_error_code='E_STALE'` 을 남긴다(06 §4.1, 08) — 수집기는 이 값을 지우지 않는다 |
 | **재탐지 예외**: 엔트리의 마지막 항목이 `stale` + `closed_reason='subject_changed'` 이고 열린 항목이 없음 | 다음 scan 에서 엔트리가 여전히 `present=1` 이면(이벤트 종류 무관) 새 항목을 **한 번** 만든다(`review_date` = 오늘 규칙 §3.3, 이유 “실행 직전 내용이 바뀌어 건너뛴 파일 — 다시 판단해 주세요”). 그 새 항목이 다시 종결되면 일반 규칙으로 돌아간다(06 §4.1 예외, 08 R7) |
+
+디렉터리 항목의 보호 신호(리뷰 #3, `policy` 가 계산 — 02 §10.1): `subject_type='dir'`(folder·dev_cache) 또는 `package` 항목의 `protection` 은 다음의 최댓값이다. (a) 디렉터리 자신의 경로 판정, (b) 켜진 `protection_rules` 중 일치 범위가 그 디렉터리 **아래**에 놓이는 규칙의 `protection` — `path_prefix` 는 접두사가 디렉터리 경로 아래, `glob` 은 고정 접두부가 디렉터리 아래이거나 `**` 로 시작하는 글롭이 하위 엔트리에 일치, `extension`·`project` 는 하위 엔트리(`file_entries` 경로 접두사 조회) 중 일치하는 것이 있을 때, (c) 하위 엔트리 중 vault 자산·환자 패턴 일치·활성 git 작업 트리(§2.2-3 으로 가지치기된 디렉터리 포함)가 있으면 각각 `security_asset`/`patient_data`/`active_repo`. (d) 하위 엔트리 중 `sensitivity='secret'` 이 있으면 등급은 바꾸지 않되 `move`·`archive` 가 막힌다(`blocked_reasons` = `contains_secret_content`, 02 §10.1). (e) **하드 링크**: 엔트리(파일·디렉터리 항목의 하위 포함)가 보호된 엔트리와 같은 `(dev, inode)` 를 가지면 그 보호 등급을 물려받고 파일 동작이 막힌다(`hardlink_to_protected`) — 04 §2.4 의 `by_ident` 색인에서 `nlink>1` 엔트리끼리 대조해 policy 에 넘긴다. 하위 트리가 순회되지 않은 부분(권한·dataless·깊이 제한)이 있으면 (b)(c) 를 확인할 수 없으므로 08 F7 이 실행 직전에 다시 검사한다(`E_PROTECTED{contains_protected_rule}`).
 
 `subject_key` = `file:<dev>:<inode>` (06). 같은 subject_key 의 열린 항목이 이미 있으면 새 항목을 만들지 않는다(부분 유니크 인덱스가 최종 방어선). 종결된 항목(`keep` 등)이 있는 파일은 다른 루트로 이동하지 않는 한 다시 묻지 않는다.
 
@@ -665,7 +685,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 
 | # | 조건 | action | dest | confidence | 이유 문구(예) |
 |---|---|---|---|---|---|
-| H1 | protection ∈ {security_asset, patient_data} | 없음(05/07) | — | — | — (vault·정책 문구) |
+| H1 | protection ∈ {security_asset, patient_data}, 또는 `sensitivity='secret'`(protection 과 무관 — 평문 비밀이 든 일반 파일), 또는 `blocked_reasons` 에 `hardlink_to_protected` | 없음(05/07). `secret` 은 `move`/`archive` 가 허용 동작에 없고(`blocked_reasons` = `secret_content`, 02 §10.1) 그룹 제안·그룹 결정에서 빠진다. `hardlink_to_protected` 는 파일 동작 전부 불가 | — | — | — (vault·정책 문구) |
 | H2 | 정확 중복 비keeper(§12.1) | `trash` | — | 0.9 | “같은 파일이 ~/Documents/계약 에 있습니다” |
 | H3 | 설치 완료 설치 파일(§7.2) | `trash` | — | 0.6~0.95 | “설치 완료된 설치 파일 (Foo 1.2.3 설치됨)” |
 | H4 | 압축 해제 완료 zip(§7.3) | `trash` | — | 0.9 | “이미 압축을 푼 파일” |
@@ -679,7 +699,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 | H12 | 그 외 | 없음 | — | — | — |
 
 규칙:
-- 제안 동작은 항상 `allowed_actions`(policy 계산) 안이어야 한다. 아니면 제안을 버리고 `suggestion_source='none'`.
+- 제안 동작은 항상 `allowed_actions`(policy 계산) 안이어야 한다. 아니면 제안을 버리고 `suggestion_source='none'`. 특히 `contains_secret_content` 인 폴더·패키지·개발 캐시 항목에는 `move`/`archive` 를 내는 규칙(H7, H9 archive, H11)을 적용하지 않고, `hardlink_to_protected` 항목에는 어떤 파일 동작도 제안하지 않는다.
 - dataless 파일, 그리고 `trash` 가 허용되지 않은(해제 전) iCloud 동기화 항목: `trash`/`move`/`archive`/`rename` 을 내는 규칙(H2~H4·H7·H8·H10·H11, OCR `rename` §6.1)은 적용하지 않는다. 근거가 있으면 **제안 동작 없이 이유만** 남긴다(예: “같은 파일이 ~/Downloads 에도 있습니다 — iCloud 쪽은 지금 정리할 수 없습니다”). `keep` 이 근거 있는 경우(H5, H6, H9 최신본)만 그대로 제안.
 - `trash` 가 허용된(게이트 열림, 다운로드됨) iCloud 동기화 항목: `trash` 를 내는 규칙(H2·H3·H4·H8·H10)은 적용할 수 있다. 단 (a) confidence 는 규칙 값에서 0.2 를 빼고 상한 0.7 — UI 일괄 기본 선택 기준(0.8)에 닿지 않게, (b) 이유 끝에 “(다른 기기에서도 삭제됩니다)”, (c) 이는 **제안일 뿐**이다 — 그룹 제안(`review_groups.suggested_action`) 계산에서 이 항목들은 제외하고, `decision.set --group` 은 이 항목을 trash 대상에서 건너뛴다(`W_PROTECTED_SKIPPED{reason:icloud_synced}`, 02 §10.1). `move`/`archive`/`rename` 을 내는 규칙(H7, H9 이전본 archive, H11, OCR rename)은 적용하지 않는다(v1 불허 확정).
 - confidence 는 “이 제안을 사용자가 받아들일 가능성”의 휴리스틱 추정이다. UI 는 0.8 이상만 그룹 일괄 버튼의 기본 선택으로 쓴다(03 이 표시 규칙 확정).
@@ -707,6 +727,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 | brew | 60초, 하루 1회 | §11.2 |
 | intel 판단 단계 | 새 항목 1,000개 기준 ≤ 1초(해시·mdls 제외) | 순수 메모리 계산 |
 | 진행 이벤트 | `--progress ndjson` 에서 1,000 엔트리 또는 1초마다 `phase=fs` 이벤트 | 02 §5.4 |
+| 로그 | collect 단계(fs·git·apps·brew·login_items)의 로그·진행 이벤트에는 **경로·파일명을 넣지 않는다** — `root_id`, `entry_id`, 개수, 소요 시간만(리뷰 #19d). 이유: 이 단계에서는 아직 vault·환자 판정 전이라 어떤 경로가 민감한지 알 수 없다 | 02 §13 |
 
 중단 안전: `scan.run` 이 중간에 죽으면 `scan_runs.status='running'` 이 남는다. 다음 `scan.run` 시작 시 `running` 인 이전 run 을 `interrupted` 로 바꾼다. 루트 단위 트랜잭션이라 커밋된 루트는 일관되고, 커밋 안 된 루트는 다음 run 에서 다시 diff 된다(이벤트 중복 없음: 커밋되지 않은 이벤트는 존재하지 않으므로).
 
@@ -733,7 +754,8 @@ devcache_min_bytes = 104857600      # §10
 | E4 | 하드링크 2개 중 하나 이름변경 | 경로 매칭 기반: `moved` 1개, 다른 링크 변화 없음 |
 | E5 | Downloads → Desktop 이동(같은 볼륨) | `moved` 1개, 열린 항목이면 `subject_path` 갱신, 종결 항목이면 새 항목(다른 루트) — `keep_always` 면 suppression 으로 `suppressed`(FR-DR-008) |
 | E6 | 외장 루트 → 내장 루트 이동(다른 볼륨, 같은 이름·크기·해시) | `moved` 1개(2차 매칭) |
-| E7 | 다운로드 중 `.crdownload` | 엔트리 없음 → 완료 후 `created` 1개 |
+| E7 | 다운로드 중 `.crdownload` → 완성 이름으로 rename | 첫 run `created` 1개(항목 없음, 보류) → 다음 run `moved` 1개, 완성 이름으로 항목 1개 |
+| E7a | 60초 안에 수정한 파일을 이름변경 | `moved` 1개(identity 매칭), 엔트리 계보 유지 — `deleted`+`created` 아님 |
 | E8 | 폴더 이름변경(하위 1,000개) | `moved` 1개(디렉터리), 하위 경로 일괄 갱신 |
 | E9 | 하위 폴더 권한 거부 | 그 하위 기존 엔트리 `present` 유지, `W_PERMISSION_SKIPPED` |
 | E10 | 외장 볼륨 분리 | 루트 건너뜀, 엔트리 유지, 항목 `stale` 안 됨 |

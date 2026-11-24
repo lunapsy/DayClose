@@ -539,11 +539,22 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 - 승인 버튼은 시트가 보여주는 `plan_hash` 그대로 `plan.approve` 에 보낸다(FR-VR-007). 시트를 연 뒤 `plan.show` 로 다시 받은 해시가 다르면 버튼 비활성 + “계획이 바뀌었습니다. 다시 확인하세요.” [새로고침].
 - 승인 버튼은 기본 버튼이지만 시트가 뜬 직후 1초간 비활성(실수 방지). ⌘⏎ 로만 키보드 승인(⏎ 단독은 안 됨).
 - 오류: `E_APPROVAL_MISMATCH` → 새로고침 유도. `E_STALE`(plan.create 시점) → 해당 항목 표시 후 재생성. `E_ARCHIVE_TARGET_MISSING` → 보관 설정 유도. `E_VOLUME_TIMEOUT`/`E_VOLUME_UNAVAILABLE` → “보관 폴더가 있는 외장 볼륨이 연결되지 않았거나 응답하지 않습니다.”
-- 승인 수단(08 §6.5): Secure Enclave 서명 승인이 구현되기 전(M7 “승인 강화”, 09 §12 V11)에는 앱이 서명 없이 `plan.approve` 를 보내고 core 가 시스템 확인 대화상자(`native_dialog`)를 띄운다 → 사용자는 [승인하고 실행] 후 대화상자를 한 번 더 누른다. 시트에 “macOS 확인 창이 뜹니다” 를 미리 표시하고, 대화상자 거부·120초 경과 → `E_APPROVAL_DENIED` → “승인하지 않았습니다. 계획은 그대로 남아 있습니다.”
-- M7 부터 모든 승인은 Touch ID/로그인 암호를 거친다(PRD C12): 서명이 동작하는 기기에서는 앱의 Secure Enclave 서명(`app_signature`, 서명마다 Touch ID/암호), 아니면 core 가 띄우는 `dayclose-native confirm`(LocalAuthentication). 결정: 이때부터 아래의 앱 자체 `LAContext` 확인은 끈다(Touch ID 가 두 번 뜨지 않게). M5~M6 에만 쓰는 장치다.
+- 승인 수단과 Touch ID 가 언제 뜨는지(08 §6.5, 리뷰 #13 판정):
+
+| 시점·조건 | [승인하고 실행] 을 누르면 | Touch ID/암호 |
+|---|---|---|
+| M5~, 이 Mac 이 V11 통과 + 승인 키 등록·대조 일치(§4.13 권한) | 앱이 해시를 재계산·대조(아래) 후 Secure Enclave 로 서명 → `plan.approve {"plan_id","hash","app_signature"}` → `app_button` | **예** — 서명마다(키의 `.userPresence`) |
+| M5~M6, V11 미통과 또는 키 없음 | 서명 없이 보냄 → core 가 macOS 확인 대화상자(`native_dialog`) | 아니요(대화상자 클릭) — 시트에 “macOS 확인 창이 뜹니다” 미리 표시 |
+| M7~, 키 없음/서명 불가 | core 가 `native_dialog` 를 LocalAuthentication 으로 바꾼 `dayclose-native confirm`(앱 번들 안 헬퍼, Secure Enclave 서명 반환, 09 §5.7) | **예** |
+| GUI 세션이 없는 경우(SSH 로 접속한 터미널) | 앱과 무관 — 터미널의 `cli_tty`(해시 앞 8자 입력)만 가능 | 아니요 — **PRD C12 의 유일한 예외**. M7 부터 `cli_tty` 는 GUI 세션이 없을 때만 제공(GUI 가 있으면 core 가 대화상자·confirm 으로 보냄, 리뷰 B3) |
+
+  대화상자·confirm 거부·120초 경과 → `E_APPROVAL_DENIED` → “승인하지 않았습니다. 계획은 그대로 남아 있습니다.” 서명 단계에서 사용자가 Touch ID 를 취소하면 요청을 보내지 않고 같은 문구.
+- 연산 행의 출처: 시트의 연산 행은 `plan.show` 의 `canonical.ops`(08 §5.1 정규 객체)를 기준으로 그리고, 같은 `seq` 의 표시 필드(`display_name`, `display_path`, `dst_display_path`, `creates_dirs`)를 붙여 보여 준다. 정규 객체에 없는 연산은 그리지 않는다 — 사람이 보는 목록과 서명하는 내용이 같은 데이터에서 나오게.
+- 서명 전 해시 대조(리뷰 B2, M5 앱 서명과 함께): `canonical_recomputable == true` 이면 앱은 `canonical` 로 `plan_hash` 를 **직접 다시 계산**(`DayCloseKit.PlanHash`, 09 §11.3)해 core 가 준 `plan_hash` 와 비교한다. 다르면 서명하지 않고 버튼 비활성 + “표시된 계획과 엔진의 계획이 일치하지 않아 승인할 수 없습니다. 정리 엔진 설정(설정 > 고급 > core 경로)을 확인하세요.” `canonical_recomputable == false`(UTF-8 로 나타낼 수 없는 경로가 있음)이면 앱은 서명하지 않고 서명 없이 보낸다 → core 가 대화상자로 확인(시트에 “일부 파일 이름 때문에 macOS 확인 창으로 승인합니다” 표시).
+- 상태 폴더 표시(리뷰 #19c): `DAYCLOSE_HOME` 이 기본값이 아니면(앱을 `--home` 으로 실행) 시트 요약 아래 별도 줄 “상태 폴더: {경로} (기본값 아님 — 이 폴더의 보호 규칙·기록이 적용됩니다)”. core 의 대화상자·confirm 문구에도 같은 줄이 들어간다(core 쪽 규칙). 이 경우 앱 툴바에도 “다른 상태 폴더” 배지.
 - iCloud 전파 줄: 계획에 `icloud_propagates` 연산이 하나라도 있으면 요약 바로 아래에 별도 줄(경고 색 + `icloud.slash`) “N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다” + [목록 보기]. 해당 연산 행에도 같은 아이콘. 별도 체크박스·추가 단계는 없다 — [승인하고 실행] 이 그 확인이다(core 가 `approvals.icloud_ack=1` 기록, 02 §10.3 7). `E_APPROVAL_REQUIRED{reason: icloud_ack_missing}` 를 받으면 “계획을 다시 확인해야 합니다” [새로고침].
 - 보관 연산이 있고 `W_ARCHIVE_UNENCRYPTED` 가 오면 시트에 정보 줄(차단 안 함).
-- (M5~M6) 앱이 [승인하고 실행] 앞에 띄우는 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`(Touch ID/암호, 설정 “승인 전 Touch ID 확인”, 기본 켬)는 **UI 실수 방지 장치일 뿐 core 가 보장하는 사람 확인이 아니다**(08 §6.5-6). 사람 게이트의 보장은 core 가 고른 수단(`native_dialog`, 이후 서명된 `app_button`)이 맡는다. 설정 화면 설명에도 이 문장을 그대로 둔다.
+- 앱 자체 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` 확인(설정 “승인 전 Touch ID 확인”, 기본 켬)은 위 표에서 Touch ID 가 “아니요” 인 경우(M5~M6 의 대화상자 경로)에만 쓴다 — 서명 경로·M7 confirm 에서는 그 자체가 Touch ID 를 띄우므로 두 번 묻지 않는다. 이 앱 확인은 **UI 실수 방지 장치일 뿐 core 가 보장하는 사람 확인이 아니다**(08 §6.5-6). 사람 게이트의 보장은 core 가 고른 수단(`native_dialog`, 서명된 `app_button`, M7 의 confirm)이 맡는다. 설정 화면 설명에도 이 문장을 그대로 둔다.
 
 ### 4.7 실행 진행과 완료 리포트 — `PlanProgressView`, `CompletionReportView` (M5)
 
@@ -700,11 +711,11 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 | 일반 | 결산 날짜 경계(`review.day_boundary`, 시각 선택), 이월(`review.carryover`), iCloud 동기화 파일 휴지통 허용(`icloud.allow_trash`, 기본 켬 — 설명 “다운로드된 iCloud 파일을 항목별로 휴지통에 넣을 수 있습니다. 다른 기기에서도 삭제됩니다. 실기기 확인이 끝난 버전에서만 동작합니다.”, M5), 결정 후 다음 항목으로(앱), 기본 썸네일 크기(앱), 그룹 열 때 기본 보기 모드 초기화(앱) | `config.set` / `UserDefaults` |
 | 스캔 위치 | 루트 표: 경로(`display_path`), 종류(`scan_root_kind` 문구: 다운로드·데스크탑·스크린샷·문서·iCloud Drive·프로젝트·보안 추가 경로·사용자 지정), 상태(마지막 doctor: 정상 / 권한 없음 / 응답 없음 / 없음), iCloud 열(`root.list` 의 `icloud_synced`·`icloud_synced_mode`·`icloud_synced_source`): 값 “동기화됨/동기화 안 됨” + 출처(`icloud_synced_source`: `detected` “자동 감지” / `user` “직접 지정” / `assumed` “확인 불가라 동기화로 간주”), 선택 [자동 · 동기화됨 · 동기화 안 됨] = `icloud_synced_mode`(기본 `auto`) → `root.set {"root_id", "icloud_synced": "auto"|"yes"|"no"}`(CLI `root set ROOT_ID --icloud-synced …`, M2). 표시 값은 실효값 `icloud_synced`. 루트 추가 시트에도 같은 선택(기본 자동) → `root.add {"path","kind","icloud_synced"}`. “동기화 안 됨” 으로 바꿀 때 확인: “이 폴더가 실제로 iCloud 와 동기화된다면 여기서 휴지통·이동한 파일이 다른 기기에서도 지워집니다.” (09 §12 V17), [+] `NSOpenPanel` → 종류 선택 → `root.add {"path","kind"}`, [−] 확인 후 `root.remove {"root_id"}`. 제외 패턴 목록 편집(`scan.exclude_globs`), 프로젝트 폴더(`projects.roots`) | `root.*`, `config.set` |
 | 보호 규칙 | `rule.list` 표: 종류(경로로 시작 / 글롭 / 확장자 / 프로젝트), 패턴, 보호 등급, 출처(기본 제공 / 내가 추가 / 설정). 기본 제공 규칙은 잠금(삭제 버튼 없음). [+] 시트 → `rule.add {"kind","pattern","protection","sensitivity"?}`. 환자 자료 파일 이름 패턴(`protection.patient_filename_patterns`), 주민번호 탐지(`protection.detect_rrn_in_text`) | `rule.*`, `config.set` |
-| 다시 묻지 않는 항목 | `suppression.list` 표: 대상(표시 이름·종류), 일치 방식, 만든 날짜. [해제] → `suppression.remove {"suppression_id"}` + 안내 “다음 스캔에서 다시 물어봅니다” | `suppression.*` |
+| 다시 묻지 않는 항목 | `suppression.list` 표: 대상(표시 이름·종류), 일치 방식, 만든 날짜. [해제] → `suppression.remove {"suppression_id"}` + 안내 “다음 스캔에서 다시 물어봅니다”. 탭 설명(리뷰 #19a·#19b): “에이전트(Skill·MCP)는 ‘항상 유지’를 만들 수 없습니다 — 에이전트가 요청하면 ‘유지’로만 기록됩니다(`W_OWNER_ONLY_DOWNGRADED`). 보호 규칙·다시 묻지 않기·스캔 위치·보안 관련 설정을 바꾸는 일도 이 앱이나 터미널에서만 할 수 있습니다(에이전트 요청은 core 가 `E_PROTECTED{owner_only}` 로 거부).” | `suppression.*` |
 | 보관 | 보관 폴더(`archive.root`) 선택(`NSOpenPanel`), 배치 미리보기 `<root>/2026/11/파일명`, 외장이면 “연결되어 있을 때만 보관할 수 있습니다” | `config.set` |
 | AI | §4.13.1 | `config.set`, `ai.status` |
 | 알림·예약 | 매일 결산 시각(`review.daily_time`), 예약 실행 켜기(SMAppService 상태 표시: 켜짐 / 승인 필요 / 꺼짐 + [로그인 항목 설정 열기]), 알림 허용 상태 + [알림 설정 열기], 메뉴바에 표시 | `config.set` + 09 §8 |
-| 권한 | (M5) 승인 키: `core.app_key` 상태(`core.app_key {"action": "show"}` → `fingerprint_short`, `registered_at`) “등록됨 · 지문 앞 8자 / 없음”, [승인 키 만들기] = 앱이 Secure Enclave 키 생성 → `core.app_key {"action": "register", "public_key": "<SPKI DER base64>"}`(10 문서 `core.app_key` 절)(core 가 사람 확인 대화상자로 지문 확인, 09 §11.3), [폐기] = `revoke`(같은 확인). 09 §12 V11 통과 전에는 버튼 대신 “이 Mac 에서 아직 사용할 수 없습니다”. §4.14.2 FDA 상태 3종(앱 / core / 예약 실행), 폴더별 접근 상태(`core.doctor` 의 루트 결과), [진단 다시 실행], [전체 디스크 접근 권한 설정 열기] | `core.doctor`, 09 §7 |
+| 권한 | (M5) 승인 키: `core.app_key` 상태(`core.app_key {"action": "show"}` → `fingerprint_short`, `registered_at`) “등록됨 · 지문 앞 8자 / 없음”, [승인 키 만들기] 흐름(리뷰 #4): ① 설명 시트 “승인할 때마다 Touch ID 로 확인하는 키를 이 Mac 의 보안 칩에 만듭니다. 잠시 후 macOS 확인 창이 뜨면 아래 8자가 같은지 보고 승인하세요.” ② 앱이 Secure Enclave 키 생성, 지문 앞 8자를 시트에 표시 ③ `core.app_key {"action": "register", "public_key": "<SPKI DER base64>"}`(10 문서 `core.app_key` 절) — 등록은 **앱(실효 채널 `app`)에서만** 받는다(core 가 skill·mcp 거부) ④ core 의 확인 대화상자(문구: “DayClose 앱 설정에서 방금 [승인 키 만들기]를 누른 경우에만 승인하세요” + 8자) ⑤ 완료 “등록됨 · {8자}”. 거부 → `E_APPROVAL_DENIED` → “등록하지 않았습니다”. [폐기] = `revoke`(같은 확인). 09 §12 V11 통과 전에는 버튼 대신 “이 Mac 에서 아직 사용할 수 없습니다”. **기동 때마다 대조**: 앱은 `core.app_key {"action":"show"}` 의 지문과 자기 Secure Enclave 공개키의 지문을 비교한다(09 §11.3). 다르면(앱에 키가 없는데 core 에 등록돼 있는 경우 포함) 닫을 수 없는 경고 배너 “등록된 승인 키가 이 앱의 키가 아닙니다. 다른 프로그램이 승인 키를 등록했을 수 있습니다.” [등록된 키 폐기](`revoke`, 사람 확인) [자세히] — 해결 전까지 앱은 서명을 보내지 않는다(대화상자 경로). §4.14.2 FDA 상태 3종(앱 / core / 예약 실행), 폴더별 접근 상태(`core.doctor` 의 루트 결과), [진단 다시 실행], [전체 디스크 접근 권한 설정 열기] | `core.doctor`, 09 §7 |
 | 고급 | core 실행 파일 경로(앱 설정 `core.command`, [찾아보기…], [기본값]), core·계약·DB 버전(`core.version`), 상태 폴더 열기, 로그 폴더 열기(`~/Library/Logs/DayClose`), 로그 수준(`core.log_level`) | `UserDefaults`, `core.version` |
 
 설정 화면에 없는 것(결정, 소유자 답변 2026-11-24): NAS·SMB·원격 보관 대상 화면, 보관 대상 목록 관리, 환자 자료 폴더 지정. 보관은 “보관 폴더” 하나(`archive.root`)뿐이고, 모든 값은 **이 Mac 에만** 적용된다는 문구를 탭 상단에 둔다(02 §8.1).
@@ -727,7 +738,8 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- 토글·선택은 `config.set`(`ai.enabled`, `ai.provider`, `ai.model`, `ai.allow_external`). “외부 공급자로 보내기 허용” 을 켤 때 확인 대화상자(위 “보내는 것/보내지 않는 것” 문구 반복) — 결정: 외부 전송은 명시적 2단계(토글 + 확인)로만.
+- 프로젝트 이름 보내기(`ai.send_project_names`, 기본 **꺼짐**, 리뷰 #17): 토글 “외부 공급자에 프로젝트 이름 보내기”. 설명 “켜면 프로젝트 이름(예: PL-Agent)을 근거로 더 정확한 분류를 받을 수 있지만, 프로젝트 이름이 외부 서비스로 나갑니다. 꺼져 있으면 프로젝트 이름을 보내지 않습니다.” 외부 공급자에만 해당(로컬 `ollama` 무관). 위 고정 문구에 한 줄 추가: “활성 Git 프로젝트 안의 파일은 외부 공급자에 보내지 않습니다(로컬 모델만).”(`protection=active_repo` → `local_only`)
+- 토글·선택은 `config.set`(`ai.enabled`, `ai.provider`, `ai.model`, `ai.allow_external`, `ai.send_project_names`). “외부 공급자로 보내기 허용” 을 켤 때 확인 대화상자(위 “보내는 것/보내지 않는 것” 문구 반복) — 결정: 외부 전송은 명시적 2단계(토글 + 확인)로만.
 - 상태 줄은 `ai.status` 의 `usable`·`blocked_reason` 기준: `disabled` “AI 제안이 꺼져 있습니다” / `provider_none` “공급자를 고르세요” / `external_not_allowed` “외부 전송 허용이 꺼져 있습니다” / `key_missing` “API 키가 없습니다”. 외부 공급자는 `enabled=true` + `allow_external=true` + 키 있음 셋 다일 때만 동작하고, 아니면 core 가 `E_AI_DISABLED`(02 §9). `ollama` 는 키·외부 허용 불필요(로컬).
 - [키 입력…]: `SecureField` 시트(공급자 선택 포함) → [저장] = `ai.key.set {"provider": P, "key": K}` — serve 요청 본문으로 보내며(stdio 파이프 = CLI 의 stdin 에 해당, 02 §5.3 “키는 stdin 으로만”: argv 에 넣지 않음) 앱은 키를 `UserDefaults`·로그·클립보드·undo 에 두지 않고, 요청을 보낸 즉시 시트의 문자열을 비운다. 성공 후 `ai.status` 재조회로 “저장됨” 표시. [키 삭제] = 확인 후 `ai.key.remove {"provider": P}`. 키 값은 어떤 화면에도 다시 표시하지 않는다(“저장됨/없음” 만). 키는 core 가 Keychain(`com.dayclose.ai`/`<provider>`)에 만든다 — 앱이 Keychain 에 직접 쓰지 않음(09 §11.4).
 - 민감도 게이트 설명은 고정 문구(위). 수치(“지난 7일 AI 요청 12건, 제외된 항목 30개”)는 `ai.status` 가 주면 표시(07 문서의 `ai_requests` 감사).
@@ -779,7 +791,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 |---|---|---|
 | DayClose 앱 | 앱 프로세스 프로브(09 §7.2) | 미리보기·썸네일에 영향 |
 | 정리 엔진(core) | `core.doctor` (channel `app`) | 수동 스캔에 영향 |
-| 예약 실행 | 스케줄러가 마지막으로 기록한 doctor 결과(09 §8.5) | 매일 21:00 실행에 영향. “마지막 확인: 어제 21:00” |
+| 예약 실행 | 스케줄러가 launchd 맥락에서 기록한 자체 프로브 결과 `scheduler.lastProbe`(09 §8.5 — 스케줄러는 `core.doctor` 를 부르지 않음) | 매일 21:00 실행에 영향. “마지막 확인: 어제 21:00” |
 
 세 값이 다르면 문구: “예약 실행에서만 권한이 없습니다. 예약 실행 헬퍼가 DayClose 앱 안에 있는지, 앱을 옮기거나 다시 빌드하지 않았는지 확인하세요.” [진단 방법 보기] → 09 §7.5 요약.
 
@@ -847,6 +859,10 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | `protection = active_repo` | D, A, M | “활성 Git 저장소 안의 파일은 옮기거나 지우지 않습니다.” |
 | `protection = system` | K(keep), D, A, M | “시스템 항목은 확인(K)이나 보류(S)만 할 수 있습니다.” |
 | `protection = user_rule` | D, A, M | “내 보호 규칙으로 보호된 항목입니다. 설정 > 보호 규칙에서 바꿀 수 있습니다.” |
+| 비밀이 든 일반 파일(`secret_content`: `sensitivity=secret`, 보호 등급과 무관 — 예: 평문 키가 든 `notes.txt`) | A, M | “비밀 정보(키·토큰)가 들어 있는 파일이라 보관·이동하지 않습니다. 복사본이 다른 곳에 남지 않게 하기 위해서입니다.” 그룹 결정에서도 빠진다(리뷰 #6) → 그룹 행·토스트 “비밀이 든 파일 N개는 그룹 결정에서 제외했습니다. 항목별로 판단하세요.” + [제외된 항목 보기]. Security Health 의 `plaintext_secret` 카드에서 [항목 보기]로 연결 |
+| 폴더 안에 보호 규칙 경로가 있음(`contains_protected_rule`, 폴더·패키지 항목) | D, A, M, R | “이 폴더 안에 보호 규칙이 걸린 경로가 있어 폴더째 휴지통·이동·보관할 수 없습니다. 폴더를 열어 항목별로 정리하세요.” [어떤 규칙인지 보기] → 설정 > 보호 규칙. 계획 후 규칙이 추가돼 실행 시점에 처음 걸리면 완료 리포트 건너뜀 행의 `E_PROTECTED{contains_protected_rule}` 에 같은 문구(리뷰 #3) |
+| 폴더 안에 비밀이 든 파일이 있음(`contains_secret_content`, 폴더·패키지 항목) | A, M | “이 폴더 안에 비밀 정보(키·토큰)가 든 파일이 있어 폴더째 보관·이동하지 않습니다. 복사본이 다른 곳에 남지 않게 하기 위해서입니다. 폴더를 열어 그 파일을 먼저 정리하세요.” [해당 파일 보기] |
+| 보호된 파일의 다른 이름(`hardlink_to_protected`: 같은 inode 를 가리키는 하드 링크) | D, A, M, R | “이 파일은 보호된 파일과 같은 실체를 가리키는 다른 이름(하드 링크)입니다. 여기서 옮기거나 지우면 보호된 파일에도 영향이 있을 수 있어 정리하지 않습니다.” |
 | `subject_type ∈ {app, package, git_repo, login_item}` | D, A, M | “DayClose 는 앱·패키지·저장소를 삭제하거나 옮기지 않습니다.” |
 | iCloud 동기화 경로(`icloud_synced`: iCloud Drive 루트, 또는 “데스크탑 및 문서” 동기화가 켜진 데스크탑·문서) | A, M, R 항상 / D 는 해제 전·`icloud.allow_trash=false` 일 때 | A·M·R: “iCloud 와 동기화되는 파일은 이동·보관·이름 바꾸기를 하지 않습니다. 다른 기기에서도 바뀌기 때문입니다.” D: “iCloud 동기화 파일의 휴지통은 아직 사용할 수 없습니다(실기기 확인 전이거나 설정에서 꺼져 있음).” — 설정에서 꺼진 경우 [설정 열기] |
 | 미다운로드(`dataless`, ☁︎) | D, A, M, R | “iCloud 에만 있는 파일입니다. 내려받지 않고는 정리할 수 없어 유지·보류만 가능합니다.” |
@@ -889,6 +905,7 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | code | 위치 | 문구(요지) | 동작 |
 |---|---|---|---|
 | `E_NOT_INITIALIZED` | 전역 | — | 온보딩으로 |
+| `E_APPROVAL_DENIED{confirm_unverified}` | 계획 시트 위 오류 시트 | “승인 확인 도구를 검증하지 못해 승인을 거부했습니다. 아무 파일도 바뀌지 않았습니다.” + 할 일: ① DayClose 앱을 다시 빌드·설치(`scripts/install-app.sh`) — 확인 도구는 앱 안(`Contents/Helpers`)에 있어야 합니다 ② 설정 > 권한 > 승인 키 상태 확인(대조 경고가 있으면 키 폐기 후 다시 만들기). 이 Mac 은 승인 키가 확인된 기기라 macOS 확인 창으로 대신 승인하지 않습니다(09 §5.7) | [설정 > 권한 열기] [닫기] |
 | `E_DEVICE_MISMATCH` | 계획 시트·기록(되돌리기)·전역 배너 | `W_DEVICE_MISMATCH` 행과 같은 안내 시트. 파일은 건드리지 않았음을 명시(“아무 파일도 바뀌지 않았습니다”) | [해결 방법] |
 | `E_CANCELLED` | 진행 표시 자리 | “취소했습니다.” (`scan.run`·`ai.classify` 만) | 재조회 |
 | `E_LOCKED` | 배너(자동 재시도 후) | “다른 작업(예약 스캔 등)이 진행 중입니다. 잠시 후 다시 시도하세요.” | [다시 시도] |
@@ -975,6 +992,8 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | 정리할 항목 0 | — | 알림을 보내지 않는다(결정: 매일 “없음” 알림은 소음). 메뉴바만 ✓ | — |
 | 권한 문제(`W_TCC_DENIED`/`W_ROOT_UNAVAILABLE`/`E_VOLUME_TIMEOUT`) | DayClose — 확인 필요 | “예약 정리 중 일부 폴더에 접근하지 못했습니다. 전체 디스크 접근 권한을 확인해 주세요.” (기본 알림 본문 뒤에 붙이지 않고 별도 1건, 하루 1회) | [설정 열기] |
 | 보안 critical 신규 | DayClose — 보안 점검 | “새로 확인이 필요한 보안 항목이 {n}건 있습니다.” | [지금 검토] |
+| 인증서 만료 임박(`review.summary.stats.vault_expiring_soon > 0`, 리뷰 C) | — | 기본 알림 본문 끝에 한 문장 “만료가 다가오는 인증서가 {vault_expiring_soon}개 있습니다.”(이름·종류 없음) | [지금 검토] → Security Health |
+| 인증서 만료 7일 이내(`stats.vault_expiring_critical > 0`) | DayClose — 인증서 만료 | “7일 안에 만료되는 인증서가 {vault_expiring_critical}개 있습니다. 갱신이 필요합니다.” — 별도 알림, 하루 1회, 정리할 항목이 0 이어도 발송(09 §8.4) | [지금 검토] → Security Health |
 | 스캔 실패 | DayClose | “오늘 결산을 만들지 못했습니다. 앱을 열어 확인해 주세요.” | [지금 검토] |
 
 - [지금 검토]: 앱 실행/활성 + 알림의 `review_date` 로 결산 화면. [나중에]: 1시간 후 같은 알림 1회 재발송(그날 최대 1회). 알림을 그냥 닫으면 재발송 없음.

@@ -40,7 +40,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 |---|---|
 | `scan_root_kind` | `downloads`, `desktop`, `screenshots`, `documents`, `icloud_drive`, `projects`, `vault_extra`, `custom` |
 | `run_status` | `running`, `completed`, `partial`, `failed`, `interrupted` |
-| `run_trigger` | `init`, `manual`, `app`, `schedule`, `agent` |
+| `run_trigger` | `manual`, `app`, `schedule`, `agent` (2026-11-24: `init` 삭제 — `core.init` 은 스캔하지 않음) |
 | `entry_kind` | `file`, `dir`, `symlink`, `package` (`.app` 등 번들 디렉터리를 한 항목으로) |
 | `file_event_type` | `created`, `modified`, `deleted`, `moved` |
 | `subject_type` | `file`, `dir`, `app`, `package`, `git_repo`, `login_item` |
@@ -60,7 +60,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `op_state` | `pending`, `running`, `done`, `failed`, `skipped` |
 | `undo_state` | `not_applicable`, `undoable`, `undoing`, `undone`, `undo_failed`, `not_undoable` |
 | `closed_reason` | `suppressed`, `subject_gone`, `subject_changed`, `executed`, `undone` |
-| `blocked_reason` (항목 JSON 전용, 02 §5.6) | `security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `archive_root_unset`, `not_yet_available` |
+| `blocked_reason` (항목 JSON 전용, 02 §5.6) | `security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `secret_content`, `contains_secret_content`, `hardlink_to_protected`, `archive_root_unset`, `not_yet_available` |
 | `approval_method` | `app_button`(Secure Enclave 서명 검증 성공일 때만), `cli_tty`, `native_dialog`, `test` |
 | `vault_asset_kind` | `certificate`, `pkcs12`, `private_key`, `ssh_private_key`, `ssh_config`, `env_file`, `api_credential`, `cloud_credential`, `apple_signing`, `android_keystore`, `vpn_config`, `crypto_wallet`, `crypto_seed_suspected`, `db_credential`, `recovery_codes`, `npki_cert`, `unknown_secret` |
 | `vault_detect_method` | `extension`, `filename`, `location`, `magic`, `content_pattern`, `gitleaks` |
@@ -92,6 +92,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 
 결정: 스크린샷은 OCR 결과가 나오기 전까지 `personal` 로 둔다. 이유: 화면에 비밀번호·환자 정보가 찍혀 있을 수 있음.
 결정: `patient`·`secret` 는 로컬 모델에도 보내지 않는다(`none`). 이유: 결정론적 규칙으로 충분하고, 모델 입력이 로그·캐시로 새는 경로를 원천 차단.
+추가(리뷰 #17): `protection=active_repo` 항목의 `ai_policy` 는 sensitivity 와 무관하게 최대 `local_only`. 프로젝트 이름의 외부 전송은 `ai.send_project_names`(기본 false).
 
 `protection_class` → `allowed_actions`: 02 문서 §10.1 표가 기준.
 추가 규칙: `protection=active_repo` 라도 `category=dev_cache` 이고 결정이 항목 단위면 `trash` 허용(재생성 가능한 산출물: `node_modules`, `.build`, `DerivedData` 등, 04 문서가 목록 확정).
@@ -167,7 +168,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 
 ### 4.3 “유지하고 다시 묻지 않기” (`keep_always`)
 
-`decision.set --action keep_always` 는 항목을 `decided` 로 만들고 `suppressions` 행을 만든다.
+`decision.set --action keep_always` 는 항목을 `decided` 로 만들고 `suppressions` 행을 만든다. 단 실효 채널이 `skill`·`mcp` 이면 `keep` 으로 기록하고 suppression 을 만들지 않는다(`W_OWNER_ONLY_DOWNGRADED`, 02 §10.3 4c).
 
 | subject_type | 기본 `match_type` / `match_value` |
 |---|---|
@@ -246,7 +247,7 @@ CREATE TABLE scan_roots (
   path        TEXT NOT NULL,
   kind        TEXT NOT NULL CHECK (kind IN ('downloads','desktop','screenshots','documents','icloud_drive','projects','vault_extra','custom')),
   enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-  max_depth   INTEGER,                 -- NULL = 무제한. projects 기본 2 (저장소 탐지용)
+  max_depth   INTEGER,                 -- root.add 가 --max-depth 생략 시 04 의 kind 별 기본값 표로 채움(예 projects 2, DerivedData 1). NULL = 무제한(사용자가 명시했을 때만)
   file_level  INTEGER NOT NULL DEFAULT 1 CHECK (file_level IN (0,1)), -- 0 = 파일 단위 항목 생성 안 함 (projects, DerivedData)
   icloud_synced_mode TEXT NOT NULL DEFAULT 'auto' CHECK (icloud_synced_mode IN ('auto','yes','no')), -- 사용자 지정(root add/set --icloud-synced)
   icloud_synced INTEGER NOT NULL DEFAULT 0 CHECK (icloud_synced IN (0,1)), -- 실효값(02 §10.1 예외 2). yes→1, no→0, auto→04 §1 판정; auto 인데 판정 신호가 없으면 desktop/documents 루트는 1(안전 쪽, 09 §12 V17). scan 마다 재계산. 정책 판단에 쓰는 값은 이 값 OR 양성 실시간 신호(02 §10.1 예외 2, 08 §9.2) — 사용자 'no' 는 양성 신호를 이기지 못함
@@ -261,7 +262,7 @@ CREATE TABLE scan_runs (
   started_at   INTEGER NOT NULL,
   finished_at  INTEGER,
   status       TEXT NOT NULL CHECK (status IN ('running','completed','partial','failed','interrupted')),
-  trigger      TEXT NOT NULL CHECK (trigger IN ('init','manual','app','schedule','agent')),
+  trigger      TEXT NOT NULL CHECK (trigger IN ('manual','app','schedule','agent')),
   collectors_json TEXT NOT NULL CHECK (json_valid(collectors_json)),  -- ["fs","git",...]
   stats_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats_json)),  -- 키: 04 §0 통계 + warning_codes(그 run 의 경고 코드 배열)
   error_code   TEXT,
@@ -363,7 +364,8 @@ CREATE TABLE review_sessions (
   stats_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats_json))
   -- stats_json 키: new_files, modified_files, deleted_files, new_apps, new_packages,
   --   items_total, items_open, items_decided, carried_over, deferred, pending_plan_bytes,
-  --   trash_planned, suppressed_today, vault_new, vault_findings_open, estimated_review_minutes(FR-DR-001 공식)
+  --   trash_planned, suppressed_today, vault_new, vault_findings_open, vault_expiring_soon(열린 expiring_soon 수), vault_expiring_critical(그중 만료 7일 이하 — 별도 알림), vault_expiring_min_days(열린 발견 사항 중 가장 가까운 만료까지 남은 일수 정수, 없으면 null),
+  --   vault_expiring_nearest_kind(그 자산의 vault_asset_kind 값만 — 이름·경로·subject 금지, 잠금 화면 알림에 쓰임), estimated_review_minutes(FR-DR-001 공식)
 ) STRICT;
 
 CREATE TABLE review_groups (
@@ -446,7 +448,7 @@ CREATE TABLE decisions (
   rule_id      INTEGER,                -- actor='rule' 일 때 policy_rules.id (M6)
   scope        TEXT NOT NULL CHECK (scope IN ('item','group')),
   group_id     INTEGER REFERENCES review_groups(id),
-  channel      TEXT NOT NULL CHECK (channel IN ('cli','app','skill','mcp','schedule','test')),
+  channel      TEXT NOT NULL CHECK (channel IN ('cli','app','skill','mcp','schedule','test')),  -- 실효 채널(승격 반영). iCloud 휴지통 결정은 cli/app 만(02 §10.1)
   request_id   TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
   revoked_at   INTEGER,
@@ -719,12 +721,14 @@ CREATE INDEX ix_ai_requests_ts ON ai_requests(ts);
 | `file_entries.where_from_host` | 다운로드 출처 호스트 | 평문 허용 (전체 URL·쿼리 저장 금지) |
 | 경로 컬럼 전반 | 파일 경로 | 평문 (DB 파일 0600 + FileVault 전제). 로그에는 보안/환자 항목 경로 금지 |
 
+**M2 해시 저장 규칙**(리뷰 #19d): vault(M3)가 생기기 전인 M2 에서도, vault 이름·확장자 신호(05 §2 의 이름 신호)에 걸리는 파일은 `file_entries.sha256` 을 저장하지 않는다 — 0003 직전 자동 백업(`pre-v3.db`)에 비밀 파일의 평문 해시가 남지 않게. collect 단계 로그는 분류 전이므로 경로를 남기지 않는다(개수만).
+
 **해시 저장 규칙**(05 §7.1, 05 R7): vault 판정이 끝나기 전에 계산한 파일 해시(예: 04 의 볼륨 간 이동 2차 매칭)는 **메모리에서만** 쓰고 `file_entries.sha256` 에 저장하지 않는다. vault 가 자산으로 판정한 엔트리의 `file_entries.sha256`·`sha256_mtime_ns` 는 같은 트랜잭션에서 NULL 로 지운다. 자산 지문은 `vault_assets.fingerprint_sha256`(HMAC)에만.
 
 **절대 저장하지 않는 것**: 비밀값·개인키 본문·토큰, 시드/복구 구문(해시 포함), gitleaks `Match`/`Secret`, AI 요청/응답 본문, 썸네일 이미지, 환자 자료 내용.
 
 암호화 형식(`common/crypto.py`):
-- 키: 32바이트 랜덤, Keychain `service="com.dayclose.db"`, `account="field-key-v1"`. `core.init` 이 생성.
+- 키: 32바이트 랜덤, Keychain `service="com.dayclose.db"`, `account="field-key-v1"`. **첫 암호화 필드를 저장할 때** 생성(M2). `core.init` 은 만들지 않는다.
 - 값: `b"\x01" + nonce(12) + ciphertext||tag`. 첫 바이트 = 키 버전.
 - AAD: `"<table>.<column>"` UTF-8 (컬럼 간 바꿔치기 방지).
 - 테스트: `DAYCLOSE_SANDBOX` 가 설정되면 키 백엔드는 `$DAYCLOSE_HOME/test-field-key`(파일)로 대체. 실제 Keychain 접근 금지.
@@ -738,6 +742,7 @@ DB 파일 보호: `DAYCLOSE_HOME` 0700, DB·WAL 0600. `core.doctor` 가 권한�
 - 파일: `core/src/dayclose/store/migrations/NNNN_<name>.sql`. 번호 = `db_schema_version`.
 - 적용: 연결 시 `schema_migrations` 와 비교 → 미적용분을 번호순으로 각각 트랜잭션(`BEGIN IMMEDIATE`) 실행 → `schema_migrations` 행 + `PRAGMA user_version=N`.
 - 데이터가 있는 DB 에 적용하기 전 SQLite backup API 로 `backups/dayclose-<ts>-pre-v<N>.db` 생성(최근 3개 유지).
+- **예외 — 0003(vault)**(05 R11, 리뷰 #19d): 0003 적용 직후 같은 실행에서 텍스트 클래스·vault 이름 신호에 걸리는 파일의 `file_entries.sha256`·`sha256_mtime_ns` 를 NULL 로 만들고, 성공하면 `pre-v3` 백업(평문 해시가 남아 있을 수 있음)을 **즉시 삭제**하고 새 백업을 만든다. 0003 이 실패하면 `pre-v3` 백업은 복원용으로 남는다(평문 해시가 남을 수 있는 유일한 경우 — 복원 후 재시도하면 위 절차로 지워진다). M2 에서는 애초에 이름 신호 파일의 해시를 저장하지 않는다(§6, `vault.signals.name_matches` 를 M2 에 먼저 구현).
 - 전진 전용(forward-only). down 마이그레이션 없음. 되돌리기 = 백업 복원(`E_DB_MIGRATION` 메시지에 백업 경로 안내).
 - 체크섬 불일치(적용된 파일이 수정됨) → `E_DB_MIGRATION`. 이미 적용된 마이그레이션 파일은 절대 수정하지 않는다.
 - DB 버전 > 코드가 아는 최대 버전 → `E_DB_MIGRATION`(“core 가 DB 보다 오래됨”), 읽기·쓰기 모두 거부.

@@ -70,7 +70,9 @@ native/                               # M6
 |---|---|---|---|
 | `DayClose` | macOS App | `DayClose.app` | DayCloseKit |
 | `DayCloseScheduler` | Command Line Tool (M7) | `DayClose.app/Contents/MacOS/DayCloseScheduler` (Copy Files: Executables) | DayCloseKit |
-| `dayclose-native` | SwiftPM executable (M6) | `DayClose.app/Contents/Helpers/dayclose-native` (빌드 단계 스크립트가 `swift build -c release --package-path native` 결과를 복사·서명) | — |
+| `dayclose-native` | SwiftPM executable (M6; `confirm` 서브명령은 M7) | `DayClose.app/Contents/Helpers/dayclose-native` (빌드 단계 스크립트가 `swift build -c release --package-path native` 결과를 복사·서명) | — |
+
+순서 의존(리뷰 #12): M7 의 승인 강화(`dayclose-native confirm`, §5.7)는 M6 에서 만드는 `dayclose-native` 골격·번들 배치·서명 단계에 의존한다. 따라서 M7 은 M6 이후다(12 의존성 요약이 이를 반영해야 함).
 | LaunchAgent plist | 리소스 (M7) | `DayClose.app/Contents/Library/LaunchAgents/com.dayclose.scheduler.plist` (Copy Files: Wrapper, subpath `Contents/Library/LaunchAgents`) | — |
 | `DayCloseUITests` | UI Test Bundle | — | — |
 
@@ -146,7 +148,14 @@ AGENTS §3-2, 12 M4 종료 기준. `scripts/check-swift-no-mutation.sh` (11 문�
 
 ### 3.4 `dayclose-native` 탐색 (core 쪽, M6)
 
-core 는 `DAYCLOSE_NATIVE` → `/Applications/DayClose.app/Contents/Helpers/dayclose-native` → `~/.local/bin/dayclose-native` 순으로 찾는다. 없으면 OCR 단계 건너뜀 + `W_TOOL_MISSING`. 앱 번들 안의 사본을 쓰는 이유: core 가 앱의 자식일 때 TCC 책임 프로세스가 앱으로 유지되고(§7.1), 같은 인증서로 서명되어 있음. 예약 실행에서는 스케줄러 헬퍼가 같은 값을 core 자식 환경에 넣는다(§8.3).
+core 는 용도에 따라 다르게 찾는다(리뷰 #2):
+
+| 용도 | 찾는 순서 | 이유 |
+|---|---|---|
+| OCR 등 읽기 전용 기능(`ocr`, M6) | `DAYCLOSE_NATIVE` → `/Applications/DayClose.app/Contents/Helpers/dayclose-native` → `~/.local/bin/dayclose-native` | 결과가 분류 힌트일 뿐 안전 결정이 아님. 없으면 OCR 단계 건너뜀 + `W_TOOL_MISSING` |
+| **승인 경로**(`confirm`, M7) | **`/Applications/DayClose.app/Contents/Helpers/dayclose-native` 하나만.** `DAYCLOSE_NATIVE` 와 `~/.local/bin` 은 무시 | 환경변수 하나로 가짜 확인 헬퍼를 끼울 수 없게. 그래도 헬퍼 경로는 보장이 아니다 — 보장은 헬퍼가 돌려주는 Secure Enclave 서명을 core 가 등록된 `core.app_key` 공개키로 검증하는 것(§5.7). 경로 고정은 엉뚱한 실행파일을 띄우지 않기 위한 위생 규칙 |
+
+헬퍼가 없거나 서명을 검증할 수 없을 때: 승인 키가 등록된 Mac(V11 통과)에서는 `E_APPROVAL_DENIED{confirm_unverified}` 로 거부하고 osascript 로 **넘어가지 않는다**(넘어가면 헬퍼를 지우는 것만으로 약한 수단으로 내려갈 수 있으므로). 승인 키가 없는 Mac(V11 미통과)만 `native_dialog`(osascript, 02 §10.3)로 남는다(§5.7). 앱 번들 안의 사본을 쓰는 이유: core 가 앱의 자식일 때 TCC 책임 프로세스가 앱으로 유지되고(§7.1), 같은 인증서로 서명되어 있음. 예약 실행에서는 스케줄러 헬퍼가 같은 값을 core 자식 환경에 넣는다(§8.3).
 
 ## 4. 앱 ↔ core 프로세스 수명관리 (`DayCloseKit.CoreClient`)
 
@@ -289,7 +298,17 @@ canTouchContent(item):
 - 출력: stdout 에 `{"results": [{"index": 0, "ok": true, "text": "…", "lang": "ko"}, {"index": 1, "ok": false, "error": "dataless"}]}` — 경로를 되풀이하지 않고 입력 `index` 로 대응. 텍스트는 `max_chars` 에서 자름.
 - 금지: 디스크 쓰기(임시 파일 포함), 로그에 텍스트 출력, 네트워크. 종료 코드 0(부분 실패는 `ok:false`), 2(입력 오류).
 
-`dayclose-native confirm`(M7 “승인 강화”, PRD C12): core 가 `native_dialog` 대신 호출하는 확인 서브명령. stdin 으로 `{"reason": "<요약 문구>"}` 를 받아 `LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason:)` 를 실행하고 `{"ok": true|false, "error": "user_cancel"|"not_available"|…}` 를 stdout 으로. 요약 문구에 iCloud 전파 줄(02 §10.3 7)이 들어간다. GUI 세션이 없으면 `not_available` → core 는 기존 규칙대로 거부. 세부 계약은 08 §6.4.
+### 5.7 `dayclose-native confirm` — 승인 확인 헬퍼 (M7 “승인 강화”, PRD C12, 리뷰 #2)
+
+M7 에서 core 가 `native_dialog` 의 구현을 osascript 대신 이것으로 바꾼다. **성공 판정은 stdout 의 `ok` 가 아니라 서명 검증이다.**
+
+- 입력(stdin): `{"payload": {"device_id": "...", "plan_id": "pln_7", "plan_hash": "<64자>"}, "summary": "<사람이 읽을 요약 — 연산 수·용량, iCloud 전파 줄(02 §10.3 7), 기본값이 아닌 상태 폴더 줄(리뷰 #19c)>"}`.
+- 처리: 요약을 `localizedReason` 으로 써서 Touch ID/로그인 암호를 요구하고, 앱과 **같은 Secure Enclave 키**(`.userPresence` 접근 제어 — 서명 자체가 사람 확인을 강제)로 앱 승인과 같은 메시지 `"dayclose.approve.v1\n" + device_id + "\n" + plan_id + "\n" + plan_hash`(02 §10.3 ③, 08 §6.5) 에 ECDSA P-256 서명한다. 헬퍼는 payload 를 바꾸지 않고, 요약 문구의 해시 앞 8자와 payload 의 해시가 같은지 스스로 확인한다.
+- 출력(stdout): `{"ok": true, "signature": "<DER base64>"}` 또는 `{"ok": false, "error": "user_cancel" | "not_available" | "no_key" | "key_mismatch"}`.
+- core 검증: `signature` 를 등록된 `core.app_key` 공개키로 검증(앱 `app_signature` 와 같은 검증 함수). 검증 성공일 때만 승인 기록. 헬퍼가 앱 번들 경로에 없거나, `ok:true` 라도 서명이 없거나 틀리면 `E_APPROVAL_DENIED{confirm_unverified}` — **osascript 대화상자로 대체하지 않는다**(08). 그래서 가짜 헬퍼가 `{"ok": true}` 를 출력해도, 헬퍼를 지워도 승인이 되지 않는다. 앱 화면은 03 §7.1(앱 재빌드·설치, 승인 키 확인 안내).
+- 키 공유: 앱과 헬퍼가 같은 Secure Enclave 키를 쓰려면 키 참조를 키체인에 두고 두 실행파일이 같은 키체인 접근 그룹(`<TeamID>.com.dayclose.app`, `keychain-access-groups` 엔타이틀먼트)을 가져야 할 것으로 본다 — **확인 필요, V11 에 포함**. 안 되면 헬퍼 전용 키를 따로 만들어 `core.app_key` 에 두 번째 공개키로 등록하는 방식이 필요하다 → 08·02 변경 사항(§13 G11).
+- GUI 세션이 없으면(core 는 `common/fsmeta.has_gui_session()` 으로 미리 판정하고 confirm 을 부르지 않음; 헬퍼도 `not_available` 로 응답) → core 는 `cli_tty`(TTY 가 있고 에이전트 표식이 없을 때)로 넘어가거나 거부(02 §10.3). 승인 키가 등록돼 있지 않은 Mac(V11 미통과)에서만 core 는 confirm 을 부르지 않고 osascript `native_dialog` 를 유지한다. 키가 등록된 Mac 에서 헬퍼가 `no_key`/`key_mismatch` 를 돌려주면 `confirm_unverified` 거부.
+- 금지: 디스크 쓰기, 로그에 payload·요약 출력, 네트워크. 실행 시간 상한 120초(02 §10.3 대화상자와 같음).
 - 한국어 인식 지원 여부: `RecognizeTextRequest.supportedRecognitionLanguages` 로 시작 시 확인, 없으면 `{"error": "language_unsupported"}`(확인 필요 §12 V12).
 
 ## 6. 썸네일 캐시 규칙 (비밀이 캐시에 남지 않게)
@@ -339,7 +358,7 @@ canTouchContent(item):
 |---|---|---|
 | 앱 | `PermissionMonitor`(Swift) | 아래 프로브를 전용 스레드에서 실행, 2초 제한 |
 | core(앱의 자식) | `core.doctor` (channel `app`) | core 의 같은 프로브 → `process.full_disk_access`, 루트별 `access`, `archive_root.access`(10 문서 확정) |
-| 예약 실행 | `DayCloseScheduler` 가 `dayclose doctor --channel schedule --json` 실행 후 결과 요약 저장(§8.5) | 하루 1회 + 스캔 경고에 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE` 이 있을 때 |
+| 예약 실행 | `DayCloseScheduler` 자신이 앱과 같은 Swift 프로브(`PermissionMonitor` 의 프로브 함수, DayCloseKit)를 launchd 맥락에서 실행 + 그날 `scan.run` 경고의 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE`(루트 ID 만) → `scheduler.lastProbe` 저장(§8.5). 결정: `core.doctor` 는 호출하지 않는다 — 채널 `schedule` 에서 core 가 허용하는 명령은 `scan.run`·`review.summary` 뿐이다(§8.3) | 매 `run_daily`·조용한 스캔 뒤 |
 
 프로브(읽기 전용, 내용을 읽지 않음):
 
@@ -386,7 +405,7 @@ probe_fda():
 |---|---|---|---|
 | D1 | 터미널(셸) | `dayclose doctor --json` | 터미널 앱의 권한 기준(F6). 여기서도 실패하면 권한 문제가 아니라 경로·볼륨 문제 |
 | D2 | 앱의 자식 | 앱 설정 > 권한 [진단 다시 실행] (= `core.doctor`, channel app) | F3 검증 |
-| D3 | launchd(스케줄러 헬퍼) | `launchctl kickstart -k gui/$(id -u)/com.dayclose.scheduler` 후, 헬퍼가 `--diagnose` 모드일 때(§8.3) 실행한 doctor 결과를 `defaults read com.dayclose.app scheduler.lastDoctor` 로 확인 | F4 검증 |
+| D3 | launchd(스케줄러 헬퍼) | `launchctl kickstart -k gui/$(id -u)/com.dayclose.scheduler` 후, 헬퍼가 `--diagnose` 모드(§8.3: Swift 프로브 + `scan.run` 1회)로 기록한 결과를 `defaults read com.dayclose.app scheduler.lastProbe` 로 확인 | F4 검증 |
 | D4 | launchd + 외장 | D3 를 외장 루트가 등록된 상태에서. `volume_probe_timeout_s`(5)+2초 안에 끝나야 함 | F1 이 프로브로 막히는지(NFR-REL-001) |
 
 판정표:
@@ -461,7 +480,8 @@ main(--tick | --diagnose):
   s = SchedulerState.load()                       # §8.5 (UserDefaults)
   if !s.enabled: exit 0
   now = Date()
-  core = CoreLocator.locate()                     # §3.2 (실패 → lastResult = core_missing, 하루 1회 알림 “정리 엔진을 찾을 수 없습니다”)
+  core = CoreLocator.locate(probeVersion: false)  # §3.2 경로 탐색만(실행 가능 여부). 계약 버전은 scan.run 응답 봉투의 meta.contract_version 으로 확인 — 다르면 review.summary 를 부르지 않고 lastResult = core_incompatible
+                                                  # (실패 → lastResult = core_missing, 하루 1회 알림 “정리 엔진을 찾을 수 없습니다”)
   gap = now - s.lastTickAt;  s.lastTickAt = now
 
   # 1) 일일 결산 (FR-MI-002/003)
@@ -474,8 +494,8 @@ main(--tick | --diagnose):
   if gap > 2 × 900s and now - s.lastScanAt > 1h:
        run_scan(notify: false); exit
 
-  # 3) 진단 (--diagnose 또는 하루 1회)
-  if --diagnose or now - s.lastDoctorAt > 24h: run_doctor()
+  # 3) 진단 (--diagnose): launchd 맥락의 권한 확인 — core.doctor 가 아니라 헬퍼 자신의 프로브
+  if --diagnose: probe_fda_swift(); run_scan(notify: false)    # 결과 → scheduler.lastProbe
   exit 0
 ```
 
@@ -484,9 +504,9 @@ main(--tick | --diagnose):
 2. `dayclose review summary --channel schedule --json` (30s 제한) — 알림 숫자의 출처.
 3. 결과 요약을 `scheduler.lastResult` 에 저장(경로 없음, §8.5), `DistributedNotificationCenter.default().postNotificationName(.init("com.dayclose.scanCompleted"), object: nil, userInfo: nil, deliverImmediately: true)` — 앱이 떠 있으면 새로고침(03 §3.6). userInfo 는 비움(다른 프로세스가 엿들을 수 있으므로).
 4. 알림 발송(§8.4). `E_LOCKED`(앱에서 사용자가 작업 중) → 5분 뒤 다음 tick 에서 재시도(`lastDailyRunAt` 을 갱신하지 않음), 3회 연속이면 그날은 알림 없이 종료.
-5. 스캔 경고에 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE` 이 있으면 `run_doctor()` 도 실행.
+5. 헬퍼 자신의 FDA 프로브(§7.2)를 실행하고, 스캔 경고 중 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE` 의 루트 ID 와 함께 `scheduler.lastProbe` 에 저장.
 
-결정: 헬퍼는 **승인·결정·계획 명령을 호출하지 않는다**(AGENTS §3-3). 허용 명령: `core.version`, `scan.run`, `review.summary`, `core.doctor`. 이를 코드 상수 목록으로 두고 그 밖의 명령 문자열은 실행 전 거부.
+결정·계약: 헬퍼가 core 에 보내는 명령은 **정확히 두 개, 이 순서**다 — `scan.run`(`--channel schedule`) 그다음 `review.summary --channel schedule`. 다른 명령(`core.doctor`, `core.version`, `vault.health`, 승인·결정·계획 등)은 채널 `schedule` 에서 core 가 `E_PROTECTED{channel_not_allowed}` 로 거부한다(02 §10.3; `plan.approve`·`plan.apply` 거부도 이 규칙의 일부). 헬퍼도 같은 두 명령을 코드 상수로 두고 그 밖의 명령 문자열은 실행 전에 거부한다(이중 방어, AGENTS §3-3). 권한·버전 확인은 core 명령이 아니라 헬퍼 자신(Swift 프로브, 봉투 `meta`)으로 한다.
 
 ### 8.4 알림 — UserNotifications
 
@@ -495,6 +515,7 @@ main(--tick | --diagnose):
 | 권한 요청 | 앱(온보딩 ⑥ 또는 설정)에서 `UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])`. 결정: 임시 승인(`.provisional`)은 쓰지 않음 — 매일 1회 알림이 핵심 기능이라 명시 승인 |
 | 범주 `DAILY_REVIEW` | 동작 `REVIEW_NOW` “지금 검토”(`.foreground`), `LATER` “나중에”(옵션 없음) |
 | 범주 `PERMISSION` | 동작 `OPEN_SETTINGS` “설정 열기”(`.foreground`) |
+| 범주 `CERT_EXPIRY` | 동작 `REVIEW_NOW`(`.foreground`) → Security Health. 인증서 만료 알림(리뷰 C): `review.summary.stats.vault_expiring_soon > 0` 이면 일일 알림 본문 끝에 개수 한 문장, `vault_expiring_critical > 0`(7일 이내)이면 이 범주로 **별도 알림**(식별자 `cert-expiry-<YYYY-MM-DD>`, 하루 1회, 정리할 항목이 0 이어도, `scheduler.notify=false` 여도 발송). 이름·종류·경로 없음, 개수만(03 §10) |
 | 내용 | `title`, `body` = 03 §10 문구. `threadIdentifier = "daily"`, `interruptionLevel = .active`(Time Sensitive 아님 — 엔타이틀먼트 불필요), `userInfo = ["kind": "daily", "review_date": "2026-11-24"]` — 경로·이름 금지 |
 | 식별자 | `daily-<review_date>`(같은 날 중복 발송 시 교체), `daily-<review_date>-later`, `permission-<YYYY-MM-DD>` |
 | 응답 처리 | 앱의 `UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:)`: `REVIEW_NOW`/기본 탭 → 메인 창 + `review_date`; `LATER` → `UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: false)` 로 같은 내용 1회 예약(식별자 `-later`, 이미 있으면 무시); `OPEN_SETTINGS` → 설정 > 권한 |
@@ -515,9 +536,9 @@ main(--tick | --diagnose):
 | `scheduler.enabled` | Bool | 앱 | 예약 실행 켜짐(SMAppService 상태와 별개로 사용자의 의도) |
 | `scheduler.dailyTime` / `scheduler.dayBoundary` | String `HH:MM` | 앱 | config 복사본 |
 | `scheduler.notify` | Bool | 앱 | false 면 `run_daily` 는 스캔·summary 만 하고 알림 생략(권한 문제 알림은 그래도 발송) |
-| `scheduler.lastTickAt`, `scheduler.lastDailyRunAt`, `scheduler.lastScanAt`, `scheduler.lastDoctorAt` | Date | 헬퍼 | |
-| `scheduler.lastResult` | Dict | 헬퍼 | `at`, `kind`(daily/quiet), `ok`, `error_code`, `warning_codes[]`, `review_date`, `new_files`, `modified_files`, `items_open`, `estimated_review_minutes`, `vault_critical_new` — **경로·이름 없음** |
-| `scheduler.lastDoctor` | Dict | 헬퍼 | `at`, `fda`(granted/denied/unknown), `roots`: `[{"root_id","status"}]` — 경로 없음 |
+| `scheduler.lastTickAt`, `scheduler.lastDailyRunAt`, `scheduler.lastScanAt`, `scheduler.lastProbeAt` | Date | 헬퍼 | |
+| `scheduler.lastResult` | Dict | 헬퍼 | `at`, `kind`(daily/quiet), `ok`, `error_code`, `warning_codes[]`, `review_date`, `new_files`, `modified_files`, `items_open`, `estimated_review_minutes`, `vault_critical_new`, `vault_expiring_soon`, `vault_expiring_critical`(둘 다 `review.summary.stats` 값 그대로 — 만료 임박 / 7일 이내 인증서 수) — **경로·이름 없음** |
+| `scheduler.lastProbe` | Dict | 헬퍼 | `at`, `fda`(granted/denied/unknown — 헬퍼 프로세스 자신의 Swift 프로브, launchd 맥락), `root_warnings`: `[{"root_id","code"}]`(그 스캔의 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE`) — 경로 없음 |
 
 두 기기(02 §8.1): `UserDefaults`·SMAppService 등록·알림 권한은 Mac 마다 따로 있고 동기화하지 않는다(iCloud 키-값 동기화 사용 안 함). 각 Mac 의 `config.toml` 시각이 그 Mac 의 스케줄을 정한다. 무인으로 도는 Mac mini 는 알림을 볼 사람이 없을 수 있으므로 설정 > 알림·예약에서 “알림 없이 스캔만” 을 고를 수 있다(앱 키 `scheduler.notify`, 기본 켬 — 결정: PRD O1 의 무인 기기 알림 방식이 확정될 때까지의 최소 선택지).
 
@@ -626,13 +647,18 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 
 문제: `plan.approve` 의 `method=app_button` 은 “앱의 승인 버튼을 사람이 눌렀다” 는 뜻이지만, 같은 사용자 권한의 어떤 프로세스(에이전트 포함)든 `dayclose serve --stdio --channel app` 을 직접 띄워 승인 요청을 보낼 수 있다. core 는 요청이 진짜 DayClose.app 에서 왔는지 알 수 없다 → 02 §10.3 “사람만 승인” 의 앱 경로가 구조적으로 보장되지 않는다. 08 §6.5 가 아래 방식을 채택했다(서명 대상 `b"dayclose.approve.v1\n" + device_id + "\n" + plan_id + "\n" + plan_hash`, nonce 없음 — 정확한 형식은 08). 구현은 12 의 M7 “승인 강화” 명시 항목이며, 가능 여부는 V11(M5) 결과로 결정한다. 그 전까지의 기본 동작: 앱은 서명 없이 `plan.approve` 를 보내고 core 가 `native_dialog` 를 띄운다(저하 모드). 앱의 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` 확인은 UI 실수 방지일 뿐 core 쪽 보장이 아니다(03 §4.6).
 
+시점(리뷰 #13 판정): 앱은 **M5 부터, V11 을 통과한 Mac 에서** 서명을 붙인다. M7 은 `native_dialog` 의 구현을 LocalAuthentication + 서명(§5.7)으로 바꾼다. M7 이후 `cli_tty` 는 GUI 세션이 없을 때(SSH — core 의 `common/fsmeta.has_gui_session()` 이 거짓)만 남고, 이것이 PRD C12(“승인할 때마다 Touch ID/암호”)의 문서화된 유일한 예외다(03 §4.6 표).
+
 앱 쪽 구현(프로토콜 세부는 08 §6.5 가 기준):
 1. 키 생성(온보딩 또는 설정 > 권한 [승인 키 만들기]): CryptoKit `SecureEnclave.P256.Signing.PrivateKey(accessControl:)`, 접근 제어 `SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage, .userPresence], nil)`(`kSecAccessControlUserPresence` SDK 확인). 앱은 키의 `dataRepresentation`(Secure Enclave 밖에서는 쓸 수 없는 참조)만 보관. 키는 Mac 마다 따로(02 §8.1).
 2. 공개키 등록: 사람 게이트로만 — core 가 지문 앞 8자를 `native_dialog`/`cli_tty` 로 확인받아 저장(08 §6.5-2). 명령은 `core.app_key`(`dayclose app-key register|show|revoke`, 02 §5.3 — register/revoke 는 core 가 사람 확인). 앱은 공개키(SPKI DER base64)를 serve 요청으로 보낸다.
 3. 승인: [승인하고 실행] → `plan.show` 로 해시 재확인 → 08 §6.5-3 의 메시지에 서명(여기서 Touch ID/암호 프롬프트) → `plan.approve` 인자 `app_signature`(02 §5.3, stdio 전용). 서명 실패·취소 → 요청을 보내지 않고 “승인하지 않았습니다”.
 4. core 검증 실패·키 미등록이면 core 가 다음 수단(`native_dialog`)으로 넘어간다(08 §6.5-4) — 앱은 시스템 대화상자가 뜰 수 있음을 시트에 표시(03 §4.6).
 5. 효과: 승인마다 Touch ID/암호 → 앱 경로의 사람 게이트가 core 쪽에서 검증된다. 에이전트는 Secure Enclave 키를 쓸 수 없다.
-비용·불확실성: 비샌드박스·개인 팀 서명 앱에서 Secure Enclave 키 생성에 데이터 보호 키체인·키체인 접근 그룹 엔타이틀먼트가 필요한지 확인 필요(§12 V11, M5). 불가하면 M7 승인 강화는 `native_dialog` 를 `dayclose-native confirm`(LocalAuthentication)으로 바꾸는 쪽만 진행(08 §6.4·12 M7).
+6. **기동 때마다 키 대조**(리뷰 #4): 앱은 기동(및 설정 > 권한 열기) 때 `core.app_key {"action":"show"}` 의 지문과 자기 Secure Enclave 공개키의 SPKI SHA-256 지문을 비교한다. core 에 키가 등록돼 있는데 (a) 앱에 키가 없거나 (b) 지문이 다르면 → 03 §4.13 의 경고 배너 + [등록된 키 폐기](`revoke`, core 의 사람 확인). 해결 전까지 앱은 서명을 붙이지 않는다. 등록(`register`)은 앱에서만 한다 — core 도 실효 채널 `app` 이 아니면 거부(skill 승격·mcp 거부), 확인 대화상자 문구는 “앱 설정에서 방금 [승인 키 만들기]를 누른 경우에만 승인”.
+7. **서명 전 해시 재계산**(리뷰 B2, M5): `plan.show` 는 `canonical`(08 §5.1 정규 객체)과 `canonical_recomputable` 을 돌려준다. 앱은 승인 시트의 연산 행을 `canonical.ops` 에서 그리고(같은 `seq` 의 표시 필드를 붙임), `canonical_recomputable == true` 이면 `DayCloseKit.PlanHash(canonical)` 로 `plan_hash` 를 다시 계산해 core 값과 비교 — 다르면 서명하지 않는다(03 §4.6). `canonical_recomputable == false`(UTF-8 이 아닌 경로)이면 서명하지 않고 서명 없이 보내며, core 가 대화상자로 확인한다. `PlanHash` 는 08 §5.1 의 직렬화 규칙을 Swift 로 옮긴 함수이고, Python 과 같은 결과임을 `contracts/fixtures/plan.show.*.json`(`canonical`+`plan_hash`)으로 `swift test` 에서 검증한다. 이것은 가짜 core(`core.command` 바꿔치기)가 화면과 다른 계획에 Touch ID 서명을 받는 것을 싸게 막는다 — 같은 사용자 권한 공격이라 보장 범위 밖이지만 비용이 작다.
+
+비용·불확실성: 비샌드박스·개인 팀 서명 앱에서 Secure Enclave 키 생성에 데이터 보호 키체인·키체인 접근 그룹 엔타이틀먼트가 필요한지, 헬퍼와 키를 공유할 수 있는지 확인 필요(§12 V11, M5). V11 이 실패한 Mac 에서는 앱 서명도 confirm 도 쓸 수 없으므로 승인은 osascript `native_dialog`(M5 의 저하 모드)로 남고, 그 Mac 은 C12 를 충족하지 못한다는 사실을 V11 결과와 함께 기록한다(소유자에게 보고).
 
 ### 11.4 Keychain
 
@@ -646,7 +672,7 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 
 ## 12. 실기기 검증 항목
 
-이 표의 항목은 **마일스톤 종료 기준**이다(12 문서): M4 = V1, V2, V3, V7, V9, V16, V17 / M5 = V8, V11, V18~V21(두 Mac 각각 — iCloud 휴지통 해제 근거) / M6 = V12 / M7 = V4, V5, V6, V10, V13, V14, V15. 해당 마일스톤 종료 전에 소유자 기기에서 수행하고 결과를 이 표의 “결과” 열과 12 문서 해당 마일스톤에 기록한다. 실패한 항목은 “실패 시” 열의 대안을 적용하고 관련 문서(02/08/03)를 먼저 고친 뒤 마일스톤을 닫는다.
+이 표의 항목은 **마일스톤 종료 기준**이다(12 문서): M4 = V1, V2, V3, V7, V9, V16, V17 / M4 에 V22 추가 / M5 = V8, V11, V18~V21(두 Mac 각각 — iCloud 휴지통 해제 근거), V23 / M6 = V12 / M7 = V4, V5, V6, V10, V13, V14, V15. 해당 마일스톤 종료 전에 소유자 기기에서 수행하고 결과를 이 표의 “결과” 열과 12 문서 해당 마일스톤에 기록한다. 실패한 항목은 “실패 시” 열의 대안을 적용하고 관련 문서(02/08/03)를 먼저 고친 뒤 마일스톤을 닫는다.
 **두 기기는 독립 설치**(02 §8.1)이므로 TCC·서명·예약 실행·iCloud 항목(V1, V3~V7, V13~V15, V17~V20)은 **MacBook 과 Mac mini 각각** 수행하고 결과를 기기별로 적는다. Mac mini 는 내장 디스크가 작고 `/Volumes/External` 이 상시 연결되어 있으므로, Mac mini 의 V3·V4·V14 는 반드시 `/Volumes/External` 아래 루트(그리고 `archive.root` 를 외장으로 둔 경우 그 경로)를 등록한 상태에서 한다 — F1(멈춤)이 실제로 재현된 곳이 이 구성이다. MacBook 은 외장 없이 홈 루트 + iCloud Drive 로 수행하고, 외장을 연결할 수 있으면 V14 를 추가로.
 
 결과 기록 형식: `V3 | Mac mini | 2026-12-01 | ok | D1 ok, D2 ok, D3 ok, 외장 3.1s`. 모든 검증은 `doctor`·미리보기 같은 읽기 동작 또는 샌드박스 데이터로 한다(실제 사용자 파일 변경 없음).
@@ -675,6 +701,8 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 | V19 | (08 §9.1-2) 이름변경이 dataless 파일의 다운로드를 일으키지 않는지 | `fs_usage -w -f filesys`·네트워크 관찰, 시험 파일을 “다운로드 제거” 한 상태에서 | 〃 | M5 | |
 | V20 | (08 §9.1-3) “다운로드 완료 + 업로드 완료” 를 내용을 읽지 않고 메타데이터만으로 판정할 수 있는지(예: `URLResourceValues` 의 `ubiquitousItemDownloadingStatus`·`ubiquitousItemIsUploaded`·`ubiquitousItemIsUploading` — 키 이름 확인 필요) | 업로드 중/완료/다운로드 제거 상태별로 값 기록 | 〃 | M5 | |
 | V21 | (08 §9.1-4) 11 문서의 iCloud 모의 장애 주입 테스트가 녹색이고, V18~V20 결과와 일치하는지 | 테스트 결과 + 위 기록 대조 | 〃 | M5 | |
+| V22 | (리뷰 B1) “데스크탑 및 문서” 동기화가 켜진 Mac 에서 iCloud Drive 안 `Desktop`/`Documents` 디렉터리와 `~/Desktop`·`~/Documents` 가 같은 `(st_dev, st_ino)` 인지, 그리고 `icloud_drive` 루트 순회가 같은 파일을 다른 경로로 한 번 더 기록하지 않는지 — 루트 중첩 제거가 경로가 아니라 하위 디렉터리의 `(dev, inode)` 를 루트들과 비교하는 방식(04)으로 동작하는지 | V17 과 같은 상태에서 `dayclose scan run --json` 두 번 + `change list` 로 중복 엔트리 0 확인(읽기만) | 04 의 가지치기 규칙 수정 | M4 | |
+| V23 | (리뷰 B3) Codex 가 pty 로 `dayclose` 를 실행할 때 에이전트 환경 표식(10 §8.5)이 보이는지. 안 보이면 `cli_tty` 의 8자 프롬프트가 에이전트 출력으로 흘러간다 | Codex 세션에서 샌드박스 계획에 `plan approve` 를 요청하게 하고, core 가 고른 수단(`native_dialog` 여야 함)을 감사 로그로 확인. **검증 전까지 core 는 GUI 세션이 있으면 `cli_tty` 를 쓰지 않는다**(02 §10.3, 03 §4.6 표) | 표식 목록 보강(10 §8.5) | M5 | |
 
 ## 13. 기반 문서(02/06/AGENTS/12)와 다른 문서에 대한 요구
 
@@ -682,7 +710,7 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 |---|---|---|
 | G1 | 02 §9 | **해소**: `core.command` 는 앱 UserDefaults 키(02 §9 명시) |
 | G2 | 02 §15.1 | **해소**: `DAYCLOSE_NATIVE` 추가됨 |
-| G3 | 10 | **해소**(10 회신): `process.full_disk_access`, `process.channel`, 루트별 `access`(iCloud 포함), `screenshots{system_location, registered}`, `archive_root{configured, access}`, `W_DEVICE_MISMATCH` + `device{db_device_id, missing_roots}`. §7.2 의 core 맥락과 스케줄러 `lastDoctor` 는 이 필드를 쓴다 |
+| G3 | 10 | **해소**(10 회신): `process.full_disk_access`, `process.channel`, 루트별 `access`(iCloud 포함), `screenshots{system_location, registered}`, `archive_root{configured, access}`, `W_DEVICE_MISMATCH` + `device{db_device_id, missing_roots}`. §7.2 의 core 맥락(앱 채널)이 이 필드를 쓴다. 스케줄러는 `doctor` 를 부르지 않는다(채널 `schedule` 허용 명령 밖) |
 | G4 | 02 §10.3 / 08 / 12 | **해소**: 02 §10.3 ③ 이 Secure Enclave 서명 검증만으로 `app_button`(부모 프로세스 검사 없음), `core.app_key`·`app_signature` 가 02 §5.3 에 추가됨 |
 | G5 | 02 §5.3 | **해소**: `ai.key.set`/`ai.key.remove` |
 | G6 | AGENTS §3-2 / 12 M4 | 디스크 썸네일 캐시를 도입하면 Swift 파일 삭제 금지 검사에 캐시 디렉터리 한정 예외가 필요. M4 는 메모리 캐시만이라 현재는 불필요 |
@@ -690,3 +718,5 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 | G8 | 04 | `login_item` 종류(BTM 로그인 항목)는 v1 에서 수집 불가 — FR-AM-004 의 범위를 LaunchAgents/Daemons plist 로 한정 |
 | G9 | 02 §7 | **해소**: 02 §7 에 반영(스케줄러는 승인·실행을 하지 않으며 채널 `schedule` 의 `plan.approve`·`plan.apply` 는 core 가 거부) |
 | G10 | 10 | **해소**(10 회신): `--channel` 전역 플래그 = 요청에 채널이 없을 때의 기본값. stdin EOF 시 serve 는 비우고 종료(진행 중 `plan.apply` 는 끝낸 뒤). 취소 제어 줄 `{"control":"cancel","target":id}` — 대기 중 요청과 진행 중 `scan.run`/`ai.classify`(루트·배치 경계) 취소, `plan.apply` 는 취소 불가. §4.3·§4.6 반영 |
+| G11 | 08 / 02 | `dayclose-native confirm` 이 앱과 같은 Secure Enclave 키로 서명하려면 키체인 접근 그룹 공유가 필요(§5.7). 공유가 안 되면 `core.app_key` 에 헬퍼용 두 번째 공개키가 필요하다 — V11 결과로 결정 |
+| G12 | 10 / 08 | **해소**: `plan.show` 의 `canonical`·`canonical_recomputable`(08 §5.1). 남은 일: 계약 픽스처에 `canonical` 포함 |

@@ -57,10 +57,16 @@ CONTEXT 턴0 §6 의 세 단계와의 대응:
 
 | sensitivity | 신호 | 판정 소유 |
 |---|---|---|
-| `secret` | 항목이 `protection=security_asset`; 엔트리에 `vault_findings(plaintext_secret|seed_phrase_suspected)` 가 open/acknowledged; gitleaks 적중 | 05 |
+| `secret` | 항목이 `protection=security_asset`; 엔트리에 `vault_findings(plaintext_secret|seed_phrase_suspected)` 가 open/acknowledged; gitleaks 적중. **효과(리뷰 #6, protection 과 무관)**: `move`·`archive` 가 허용 동작에서 빠지고(`blocked_reasons` = `secret_content`, 02 §10.1), 그룹 결정·그룹 제안·학습 규칙 결정·AI 제안 대상에서 빠진다(§5.2·§5.5·§8.2) — 비밀이 든 일반 파일이 보관 폴더로 평문 복사되지 않게 | 05 |
 | `patient` | `protection=patient_data` — 판정은 기본 패턴만(파일명 패턴 `config.protection.patient_filename_patterns`, 로컬 텍스트의 주민등록번호 `detect_rrn_in_text`) + 사용자가 직접 추가한 `patient_data` 보호 규칙. 환자 폴더 설정은 없다(02 §9, 소유자 결정 2026-11-24); OCR/추출 텍스트에 주민등록번호 패턴(FR-SO-006) | policy(보호), 05 와 패턴 공유 |
 | `personal` | category `screenshot`(OCR 전후 모두 — 아래 결정); category `image` 중 카메라 EXIF(Make/Model) 있음 또는 ext ∈ {heic, heif, dng, raw, cr2, cr3, nef, arw}; category `media` 중 origin `screenshots`; category `document` 중 origin `documents`·`icloud_drive` 또는 루트 `scan_roots.icloud_synced=1`; **dataless 파일 전부**(내용 검사를 할 수 없으므로); ext ∈ {ics, vcf, eml}; 사용자 보호 규칙의 `sensitivity` 지정값 | policy |
 | `normal` | 그 외 | — |
+
+**로컬 텍스트의 주민등록번호 규칙**(M2, 리뷰 #7 — 소유 `policy`, 구현 `policy/patient.py`):
+- 대상: 04 §2.6a 의 읽기 지점이 넘겨주는 바이트 — `file_level=1` 루트에서 이번 run 에 `created`/`modified` 된 엔트리 중 05 §2.2 클래스 C 의 텍스트 확장자 집합에 속하는 파일, 앞 `scan.content_scan_max_bytes` 바이트, NUL 없는 것. 기준선 run·dataless·`detect_rrn_in_text=false` 는 제외(04 §2.6a). 읽기는 `common/textread.read_text_prefix` 만 쓰고 `vault` 를 import 하지 않는다.
+- 패턴: `(?<!\d)(\d{2})(\d{2})(\d{2})[-\s]?([1-8])\d{6}(?!\d)` 이면서 앞 6자리가 유효한 날짜(월 01–12, 일 01–31 — 오탐 감소). 체크섬 검사는 하지 않는다(2020년 이후 발급 번호는 체크섬을 따르지 않음). M6 의 OCR·문서 추출 텍스트(`file_text`)에도 같은 함수를 쓴다.
+- 적중 시: 그 엔트리의 `protection='patient_data'`(02 §10.1 판정 근거 “내용”), `sensitivity='patient'`. 항목 JSON 의 `blocked_reasons` 는 `patient_data`. 일치 문자열·위치·해시·개수는 저장·로그하지 않는다(로그에는 `item_id` 와 `event="policy.patient_text_hit"` 만).
+- 해제: 파일이 `modified` 되어 다시 읽었는데 적중하지 않으면 이 신호는 사라진다(다른 신호가 없으면 등급도 내려감). 결정: 이것은 같은 파일의 사실이 바뀐 것이라 §3.1 첫 줄의 “단조 증가”(신호 간 비교)와 충돌하지 않는다.
 
 결정: OCR 이 아무것도 찾지 못해도 스크린샷은 `personal` 아래로 내리지 않는다. 이유: 정규식은 화면 속 이름·대화·계좌 같은 개인 정보를 다 잡지 못한다. 06 §3.1 의 “OCR 결과가 나오기 전까지 personal” 은 상한이 아니라 하한으로 해석한다.
 결정: dataless 파일을 `personal` 로 둔 이유 — 02 §10.6 에 따라 vault 내용 검사·주민등록번호 검사·OCR 을 할 수 없어 `secret`/`patient` 신호가 없다는 것이 “안전하다” 는 뜻이 아니다. 그래서 외부 모델에는 보내지 않는다(로컬 모델에는 이름만).
@@ -73,10 +79,12 @@ ai_policy(item, cfg):
     if item.sensitivity in ('patient','secret')           → 'none'
     if item.protection in ('security_asset','patient_data') → 'none'   # 민감도와 이중 방어
     if item.sensitivity == 'personal'                     → 'local_only'
+    if item.protection == 'active_repo'                   → 'local_only'   # 리뷰 #17, CONTEXT 턴0 §6
     if not cfg.ai.allow_external                          → 'local_only'
     return 'external_ok'
 ```
 - 항목 JSON 의 `ai_policy` 는 읽을 때 계산(06 §3.1). 저장하지 않는다.
+- 결정(리뷰 #17): 활성 git 저장소 안의 항목(`protection=active_repo`)은 외부 모델에 보내지 않는다. CONTEXT 턴0 §6 “활성 Git 프로젝트는 외부 AI 에 파일명·내용 미전송”. 같은 이유로 **프로젝트 이름**도 외부 공급자에는 `ai.send_project_names=true` 일 때만 보낸다(기본 `false`, §8.2). 로컬 공급자에는 항상 보낸다.
 - 공급자 위치: `provider='ollama'` 이고 `ai.ollama_url` 호스트가 루프백(`127.0.0.1`, `::1`, `localhost`)이면 **로컬**, 그 외(LAN 의 다른 기기 포함)는 **외부**로 취급한다. `anthropic`/`openai` 는 항상 외부.
 - 외부 공급자에는 `external_ok` 항목만, 로컬 공급자에는 `external_ok`·`local_only` 항목만 보낸다.
 - 외부 공급자 사용은 소유자가 허용했지만(2026-11-24) 옵트인이다. 세 조건이 **모두** 참일 때만 외부로 보낸다(02 §9): `ai.enabled=true`, `ai.allow_external=true`, Keychain(`com.dayclose.ai`/`<provider>`)에 키 존재. 하나라도 거짓이면 `ai.classify` 는 `E_AI_DISABLED`, `details.reason` ∈ {`disabled`, `external_not_allowed`, `api_key_missing`}. 결정: 조용히 0건 전송하는 대신 오류로 알린다 — 사용자가 설정 모순을 알아야 한다.
@@ -122,6 +130,7 @@ collector 가 항목을 만들 때(`detected`), 다음을 순서대로 평가하
 - 기본 만료 없음(`expires_at NULL`). `suppression.remove SUP_ID` → `removed_at=now`. 다음 탐지(다음 `created`/다른 루트 이동)에서 다시 묻는다(FR-DR-008 AC).
 - 자동 해제: 원래 엔트리가 `present=0` 이 된 지 180일(06 §8 의 엔트리 압축 시점)이 지나면 `entry_identity` suppression 은 의미가 없으므로 `removed_at` 을 기록한다(압축 작업이 함께 처리).
 - `decision.undo` 로 `keep_always` 결정을 취소하면 그 결정이 만든 suppression 을 제거(06 §4.1).
+- **에이전트 채널**(리뷰 #19b, **M2** — `decision.set`·`suppression.add/remove` 가 생기는 마일스톤부터 강제): 실효 채널이 `skill`·`mcp` 인 `decision.set --action keep_always` 는 `keep` 으로 기록되고 suppression 을 만들지 않는다. 응답에 경고 `W_OWNER_ONLY_DOWNGRADED`. `suppression.add/remove` 도 그 채널에서는 `E_PROTECTED{owner_only}`(02, 리뷰 #19a). 이유: “다시 묻지 않기” 는 사람이 앞으로 볼 것을 줄이는 결정이라 에이전트가 대신할 수 없다.
 
 ---
 
@@ -193,10 +202,10 @@ T4 {category, origin_root_kind}
 
 `scan.run` review 단계(04 §0 의 7 다음)에서, `state='proposed'` 인 항목 각각에 대해:
 
-1. 적격성: `protection='none'`, `sensitivity ∈ {normal, personal}`, suppression 미일치, 사용자 결정 이력 없음(같은 항목에 `actor='user'` 결정이 한 번이라도 있었으면 제외 — `decision.undo` 로 되돌린 항목 포함).
+1. 적격성: `protection='none'`, `sensitivity ∈ {normal, personal}`(→ `secret` 항목은 규칙 결정 대상이 아님, 리뷰 #6), suppression 미일치, 사용자 결정 이력 없음(같은 항목에 `actor='user'` 결정이 한 번이라도 있었으면 제외 — `decision.undo` 로 되돌린 항목 포함).
 2. 일치 규칙 = 조건이 일치하는 `active` 규칙들.
 3. 규칙이 하나이거나, 여러 개여도 동작·목적지가 모두 같으면 → 그 동작. 서로 다르면 **충돌** → 자동 결정 안 함, 제안만 `source='rule'`(가장 구체적 규칙), 이유 끝에 “(규칙 충돌)”.
-4. 거부 조건(하나라도 해당하면 자동 결정 안 하고 제안만): 동작이 `allowed_actions` 밖 / 휴리스틱이 다른 동작을 confidence ≥ 0.6 으로 제안(예: 04 H5 “업데이트 미적용” 인데 규칙은 trash) / `move` 인데 목적지 템플릿이 해석되지 않음 / 규칙당 하루 자동 결정 상한 `policy.auto_apply_daily_cap`(**200**) 초과 / **동작이 `trash` 이고 항목이 iCloud 동기화**(실효 상태 = 저장된 루트 값 OR 실시간 신호 — 04 §1.1, 08 §9.2. 사용자가 루트를 `no` 로 지정했어도 실시간 신호가 양성이면 iCloud 동기화로 본다)(게이트가 열려 `allowed_actions` 에 trash 가 있어도 — 02 §10.1 예외 2: iCloud 동기화 항목의 trash 결정은 사람이 항목 단위로만). 이 경우 제안(`source='rule'`)만 채우고 이유 끝에 “(다른 기기에서도 삭제됩니다 — 직접 결정해 주세요)”, 그룹은 `habit:` 이 아니라 일반 그룹.
+4. 거부 조건(하나라도 해당하면 자동 결정 안 하고 제안만): 동작이 `allowed_actions` 밖 / 휴리스틱이 다른 동작을 confidence ≥ 0.6 으로 제안(예: 04 H5 “업데이트 미적용” 인데 규칙은 trash) / `move` 인데 목적지 템플릿이 해석되지 않음 / 규칙당 하루 자동 결정 상한 `policy.auto_apply_daily_cap`(**200**) 초과 / **동작이 `trash` 이고 항목이 iCloud 동기화**(실효 상태 = 저장된 루트 값 OR 실시간 신호 — 04 §1.1, 08 §9.2. 사용자가 루트를 `no` 로 지정했어도 실시간 신호가 양성이면 iCloud 동기화로 본다)(게이트가 열려 `allowed_actions` 에 trash 가 있어도 — 02 §10.1 예외 2: iCloud 동기화 항목의 trash 결정은 사람이 항목 단위로만). 이 경우 제안(`source='rule'`)만 채우고 이유 끝에 “(다른 기기에서도 삭제됩니다 — 직접 결정해 주세요)”, 그룹은 `habit:` 이 아니라 일반 그룹. 근거(리뷰 #5): iCloud 동기화 항목의 trash 결정은 사람의 항목 단위 결정 — `actor='user'`, `scope='item'`, 실효 채널 `decisions.channel ∈ {cli, app}` — 일 때만 유효하다(02 §10.1 예외 2, 08 V3). 규칙 결정은 `actor='rule'` 이고 채널이 `schedule` 등이라 어느 조건으로도 통과하지 못하며, AI 는 결정을 만들지 않는다(§1). 에이전트 채널(`skill`/`mcp`)의 사용자 결정도 이 조건으로 거부된다.
 5. 통과 → `decisions(actor='rule', rule_id, scope='item', channel=<scan 채널>, request_id)` 생성, 항목 `proposed → decided`(06 §4.1 의 같은 전이), `suggestion_source='rule'`, 그룹 `habit:<policy_rules.id>`(04 §9), `policy_rules.last_applied_at`.
 
 - `policy.auto_apply=false`(설정)이면 4·5 를 하지 않고 제안만 채운다(`source='rule'`, confidence 0.85).
@@ -336,8 +345,8 @@ class Provider(Protocol):
 | `where_from_host` | `file_entries.where_from_host` | 호스트만(이미 저장 형태) |
 | `text_excerpt` | `file_text`(M6) | **로컬 공급자 + `local_only`/`external_ok` 항목에만**, §8.3 마스킹 후 앞 1,000자. 외부 공급자에는 항상 `null` |
 | `allowed` | `allowed_actions` ∩ {keep, move, archive, trash} | |
-| `projects[]` | `projects`(present=1, 활성 우선 최대 30개) | `root_path` 미전송. 이름이 `redact_name` 에서 차단되거나 `root_path` 가 보호 규칙(`patient_data`, `security_asset`) 아래이거나 이름이 환자 파일명 패턴에 일치하면 목록에서 제외 |
-| `dest_candidates[]` | 후보 프로젝트별 04 §8.3 목적지 | `label` 은 `<프로젝트 이름>/<하위폴더>/`. 절대경로 미전송. `archive` 는 목적지를 고르지 않는다(보관 폴더 `archive.root` 하나, `decisions.dest_path` NULL — 06) → `archive.root` 가 비어 있으면 `allowed` 에서 `archive` 를 뺀다 |
+| `projects[]` | `projects`(present=1, 활성 우선 최대 30개) | **외부 공급자이고 `ai.send_project_names=false`(기본)이면 `name` 대신 `"프로젝트 1"`·`"프로젝트 2"` 같은 순번 라벨**(실제 이름 매핑은 메모리에만), `kind`·`active`·`last_activity_local` 은 그대로. `root_path` 미전송. 이름이 `redact_name` 에서 차단되거나 `root_path` 가 보호 규칙(`patient_data`, `security_asset`) 아래이거나 이름이 환자 파일명 패턴에 일치하면 목록에서 제외 |
+| `dest_candidates[]` | 후보 프로젝트별 04 §8.3 목적지 | `label` 은 `<프로젝트 이름 또는 순번 라벨>/<하위폴더>/`(`projects[]` 와 같은 규칙). 절대경로 미전송. `archive` 는 목적지를 고르지 않는다(보관 폴더 `archive.root` 하나, `decisions.dest_path` NULL — 06) → `archive.root` 가 비어 있으면 `allowed` 에서 `archive` 를 뺀다 |
 
 전송하지 않는 것(명시): 절대경로·부모 디렉터리 이름, 홈 디렉터리 이름(사용자명), `itm_` ID, 해시, 다른 항목의 결정 이력, 사용자 메모, 보안 자산·환자 항목의 존재 여부, `device_name`.
 
@@ -429,6 +438,7 @@ allow_external = false
 ollama_url = "http://127.0.0.1:11434"   # 루프백이 아니면 외부
 timeout_s = 60                          # 외부 공급자는 min(timeout_s, 30)
 max_items_per_request = 100
+send_project_names = false              # 외부 공급자에 프로젝트 이름 전송(리뷰 #17, 기본 false)
 
 [policy]                                # M6
 learn_window_days = 60

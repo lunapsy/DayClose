@@ -111,6 +111,29 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 | 설정 파일 타입 오류 | `E_CONFIG_INVALID` (`details.key`) |
 | 예상치 못한 예외 | `E_INTERNAL` (`meta.request_id` 로 로그 추적) |
 
+### 1.8 소유자 전용 명령 (에이전트 채널에서 core 가 거부)
+
+결정(리뷰 #19a): 보호를 약화하거나 DayClose 가 보는 범위를 바꾸는 명령은 실효 채널(§8.5 승격 반영)이 `skill`·`mcp` 이면 core 가 `E_PROTECTED`(`details.reason="owner_only"`)로 거부한다. MCP 비노출 목록(§9.3)을 Skill 채널에도 **실행 규칙**으로 강제하는 장치다(Skill 규칙 R4 는 보조).
+
+| 명령 | 조건 | 시행 시점(명령이 나오는 마일스톤) |
+|---|---|---|
+| `core.init` | 항상 | M1a |
+| `config.set` | 키가 `protection.*`, `vault.*`, `scan.exclude_globs`, `icloud.*`, `ai.allow_external` | M1a |
+| `root.add`, `root.remove` | 항상 | M1a |
+| `rule.remove` | 항상 | M2 |
+| `suppression.add`, `suppression.remove` | 항상 | M2 |
+| `root.set` | 항상 | M2 |
+| `policy.accept`, `policy.reject` | 항상 | M6 |
+
+실효 채널 계산(§8.5 의 에이전트 표식 승격)은 M1a 부터 존재한다.
+
+샌드박스와 승격(02 §10.3-4b): 승격은 **항상** 계산한다. **유효한 샌드박스(02 §10.4) 안에서** 실효 채널 `skill` 이 표식 승격(예 `CLAUDECODE`)에서만 왔으면 소유자 전용 거부를 건너뛴다(테스트·코딩 에이전트가 표식 있는 환경에서 CLI 를 돌리므로). `--channel skill|mcp` 를 **명시**하면 샌드박스 안에서도 거부한다(거부 경로 테스트용). 샌드박스 밖에는 우회가 없다 — 표식이 있으면 항상 거부. 감사 로그의 `channel` 은 어느 경우든 실효 채널(`skill`)이다. 이 예외는 위 표의 소유자 전용 거부에만 적용된다 — iCloud trash 결정의 `cli`·`app` 조건과 `app-key register` 의 `app` 조건은 샌드박스 안에서도 표식 승격 `skill` 을 거부한다.
+
+- `decision.set --action keep_always`(리뷰 #19b, M2): 에이전트 채널에서는 거부하지 않고 `keep` 으로 기록하며 경고 `W_OWNER_ONLY_DOWNGRADED`(`details.item_ids`)를 낸다 — 에이전트는 suppression 을 만들 수 없다.
+- `core.app_key register` 는 실효 채널 `app` 에서만(리뷰 #4, §2.11).
+- iCloud 동기화 항목의 `trash` 결정은 실효 채널 `cli`·`app` 에서만(리뷰 #5, §2.7).
+- 채널은 자기 신고 + 환경 표식 승격이라 우회 가능한 휴리스틱이다(02 §10.3 잔여 위험). 이 규칙은 "문서화된 인터페이스로 행동하는 에이전트"를 막는 것이 목적이다.
+
 ---
 
 ## 2. 명령 레퍼런스
@@ -118,7 +141,7 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 표기: **W** 쓰기 잠금, **F** 사용자 파일 변경, **M#** 첫 구현 마일스톤. 각 절의 JSON 예시는 `data` 만 보인다(봉투는 §1.2). 예시 값은 샌드박스 가짜 데이터다.
 
 공유 객체 형태:
-- **Item**: 02 §5.6 그대로(`blocked_reasons`, `origin_root_kind`, `is_dataless`, `icloud_synced`(bool) 포함). `blocked_reasons` 이유 코드는 06 `blocked_reason` enum(`security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `archive_root_unset`, `not_yet_available`), 한 동작에 이유가 여럿이면 그 순서의 첫 번째. 이하 `Item`.
+- **Item**: 02 §5.6 그대로(`blocked_reasons`, `origin_root_kind`, `is_dataless`, `icloud_synced`(bool) 포함). `blocked_reasons` 이유 코드는 06 `blocked_reason` enum(`security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `archive_root_unset`, `not_yet_available`) + 리뷰 #6 의 `secret_content`(02 §5.6). 실행 시 `E_PROTECTED.details.reason` 에는 이 밖에 `contains_protected_rule`·`contains_secret_content`(디렉터리 연산, 08 F7)·`hardlink_to_protected`(같은 `(dev, inode)` 의 보호 엔트리를 상속, 08 §9)도 나온다. 한 동작에 이유가 여럿이면 그 순서의 첫 번째. 이하 `Item`.
 - **iCloud 규칙(02 §10.1 예외 2, FR-EX-008)**: dataless 파일 → 파일 동작 4개 모두 막힘(`dataless`). iCloud 동기화 경로의 다운로드된 파일 → `move`/`archive`/`rename` 은 v1 에서 허용하지 않는다(확정, 08 §9.1) — 항상 `icloud_synced`; `trash` 는 해제 게이트(코드 상수 `policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** 설정 `icloud.allow_trash`)가 둘 다 참일 때만 허용, 아니면 `icloud_synced`. 게이트 거짓 예 `{"trash": "icloud_synced", "move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`, 게이트 참 예 `{"move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`. `icloud_synced=true` 이고 `trash` 가 허용되면 UI·에이전트는 "다른 기기에서도 삭제됨"을 알린다.
 - **Group**: §2.5 끝의 Group 형태.
 - **Plan**: §2.11 첫머리의 Plan 형태.
@@ -150,21 +173,22 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
  "roots_skipped": [{"path": "/…/user/Documents", "reason": "missing"}]}
 ```
 - `created`: 이번 호출로 `DAYCLOSE_HOME`/DB 를 새로 만들었는지. `migrated_from`: 마이그레이션이 일어났으면 이전 버전, 아니면 `null`.
-- `field_key`(M2~): `created | exists | unavailable`(`unavailable` 이면 경고 `W_FIELD_KEY_UNAVAILABLE`).
+- `field_key`(M2~): `exists | absent | unavailable` — 조회만 한다. 필드 암호화 키는 `init` 이 아니라 **첫 암호화 필드를 쓸 때** 만든다(리뷰 #19e). `unavailable` 이면 경고 `W_FIELD_KEY_UNAVAILABLE`.
+- `init` 은 스캔하지 않는다(리뷰 #19g). 기본 루트 등록 후 첫 스캔은 사용자가 `scan run`. `root add` 에서 `--max-depth` 를 생략하면 04 의 kind 별 기본값(리뷰 #19f).
 - `roots_added`: 기본 루트 등록 결과(FR-CORE-002). 이미 등록된 루트는 다시 넣지 않고 목록에도 없다. 존재하지 않는 경로는 `roots_skipped` + 경고 `W_ROOT_UNAVAILABLE`.
 - 기본 루트 경로는 `Path.home()` 기준(테스트에서는 샌드박스 `user/` 로 패치, 11 문서).
 - 고유 오류: `E_PERMISSION`(홈 생성 실패), `E_SANDBOX_VIOLATION`(샌드박스 설정 시 `DAYCLOSE_HOME` 이 그 밖).
 - 사람용: `초기화 완료: <home> (DB v2, 루트 4개 추가)` 또는 `이미 초기화됨: …`.
 
-#### `core.doctor` — `dayclose doctor` (M1; M3·M7 에서 항목 추가)
+#### `core.doctor` — `dayclose doctor` (M1a; M3·M5·M7 에서 항목 추가)
 
-진단 자체가 성공하면 문제가 있어도 `ok=true`, 종료 0. 결정: 문제 유무는 `data.healthy` 로 판단한다. 이유: 에이전트가 "진단 실패"와 "진단 결과 문제 있음"을 구분해야 한다.
+범위(리뷰 #9b): M1 은 루트 접근성·DB 무결성·권한·`device_id` 불일치. host UUID 검사는 M5, `tools`(gitleaks 등) 상세·FDA 는 M3·M7. 진단 자체가 성공하면 문제가 있어도 `ok=true`, 종료 0. 결정: 문제 유무는 `data.healthy` 로 판단한다. 이유: 에이전트가 "진단 실패"와 "진단 결과 문제 있음"을 구분해야 한다.
 
 ```json
 {"healthy": false,
  "issues": [{"code": "W_TCC_DENIED", "message": "~/Desktop 에 접근할 수 없습니다. 전체 디스크 접근 권한을 확인하세요.", "target": "root_2"},
             {"code": "W_DEVICE_MISMATCH", "message": "이 DB 는 다른 Mac 에서 만들어진 것 같습니다.", "target": null}],
- "device": {"device_id": "dev_5f2c9a1e", "db_device_id": "dev_77aa0b13", "device_name": "Mac mini", "missing_roots": ["root_3"]},
+ "device": {"device_id": "dev_5f2c9a1e", "db_device_id": "dev_77aa0b13", "device_name": "Mac mini", "host_check": "skipped"},
  "tools": [{"name": "git", "found": true, "version": "2.51.0"}, {"name": "gitleaks", "found": false, "version": null}],
  "roots": [{"root_id": "root_1", "display_path": "~/Downloads", "access": "ok"},
            {"root_id": "root_2", "display_path": "~/Desktop", "access": "tcc_denied"},
@@ -178,7 +202,7 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 ```
 - `roots[].access`: `ok | tcc_denied | timeout | missing`(02 §10.5). 볼륨 루트는 `common/paths.probe` 경유.
 - `process.full_disk_access`: `granted | denied | unknown`. 판정 방법은 09 문서(TCC 보호 파일 프로브). `process.channel` 은 실효 채널(§8.5 승격 반영).
-- `W_DEVICE_MISMATCH`(02 §8.1 결과 4): `app_meta.device_id ≠ config.device_id` 이거나 활성 루트 경로가 존재하지 않을 때. `device.db_device_id`·`device.missing_roots` 로 근거를 준다. 진단만 하고 아무것도 고치지 않는다(복구 방법은 README: 그 기기에서 새로 `init`).
+- `W_DEVICE_MISMATCH`(리뷰 #9c): **기기 동일성 불일치만**. M1: `app_meta.device_id ≠ config.device_id`. M5 부터: `app_meta.host_uuid_sha256` 불일치도(08 §7.11, `device.host_check = ok | mismatch`; M5 전에는 `skipped`). 루트 경로가 없는 것은 기기 문제가 아니라 루트 접근성 결과(`roots[].access="missing"`, 경고 `W_ROOT_UNAVAILABLE`)다. 진단만 하고 아무것도 고치지 않는다(복구: 그 기기에서 새로 `init`).
 - `archive_root`: `config.archive.root` 미설정이면 `{"configured": false, "access": null}`. 설정됐으면 프로브 결과(`ok | timeout | missing | tcc_denied`) — 접근 불가는 `archive` 결정·계획이 `E_ARCHIVE_TARGET_MISSING` 이 될 것이라는 예고.
 - `screenshots`: 시스템 스크린샷 위치(`defaults`, 09)가 등록된 루트에 없으면 `registered=false` + `issues` 에 안내(경고 코드 없이 `code: null`).
 - `db.integrity`: `PRAGMA quick_check` 결과 `ok | failed`. 실패여도 `healthy=false` 로 보고하고 오류 봉투를 쓰지 않는다(doctor 는 `E_DB_CORRUPT` 를 내지 않는 유일한 명령).
@@ -217,7 +241,9 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 - `config set` 은 `config.toml` 을 원자적으로 교체(임시 파일 → `os.replace`, `config` 모듈 소유). 주석은 보존하지 않는다(`tomli-w` 한계) — 사람용 출력에 한 번 경고하지 않고 문서(README)에만 적는다.
 - 비밀 키를 받는 설정은 없다(02 §9). AI 키 등록은 Keychain 을 쓰는 별도 절차(07)로, 이 명령으로 하지 않는다.
 - `config list` 는 페이지네이션 없이 전부(`next_cursor=null`).
-- `icloud.allow_trash`(02 §9): 소유자 전용 키. 실효 채널(§8.5 승격 반영)이 `cli`·`app` 일 때만 바꿀 수 있고 `skill`·`mcp`·`schedule` 이면 `E_PROTECTED`(`details.reason="owner_only_key"`). MCP 는 `config.set` 자체가 비노출. 값을 바꾸면 iCloud 항목의 `allowed_actions` 가 다음 조회부터 바뀐다. 코드 게이트가 거짓인 동안에는 `true` 여도 효과가 없음을 응답 `data.effective=false` 로 알린다.
+- 이 문서가 참조하는 리뷰 신설 키: `scan.content_scan_max_bytes`(로컬 텍스트 주민번호 탐지 읽기 상한, 리뷰 #7, 07 §3.1), `ai.send_project_names`(기본 `false`, 리뷰 #17, 07). 02 §9 반영 후 `config list` 에 나온다.
+- 소유자 전용 키는 §1.8 표(에이전트 채널 `E_PROTECTED{owner_only}`).
+- `icloud.allow_trash`(02 §9): 소유자 전용 키. 실효 채널(§8.5 승격 반영)이 `cli`·`app` 일 때만 바꿀 수 있고 `skill`·`mcp`·`schedule` 이면 `E_PROTECTED`(`details.reason="owner_only"`). MCP 는 `config.set` 자체가 비노출. 값을 바꾸면 iCloud 항목의 `allowed_actions` 가 다음 조회부터 바뀐다. 코드 게이트가 거짓인 동안에는 `true` 여도 효과가 없음을 응답 `data.effective=false` 로 알린다.
 - `archive.root`: 설정 시 볼륨 암호화를 판정(08 §4.4-7)하고 암호화되지 않았거나 판정 불가면 경고 `W_ARCHIVE_UNENCRYPTED`(차단 안 함, PRD C14). 같은 경고를 보관 연산이 있는 `plan.create` 와 `core.doctor` 도 낸다.
 
 ### 2.3 root
@@ -231,7 +257,7 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 
 - `root.add`: JSON 인자 `path`, `kind`(`scan_root_kind`), `max_depth`. `kind=projects` 면 `file_level=false`, `max_depth` 기본 2(06 §5.1). 같은 경로가 활성 등록돼 있으면 `created=false` 로 기존 루트 반환(멱등).
   - 고유 오류: 경로 없음 `E_NOT_FOUND`, 파일임(디렉터리 아님) `E_USAGE`, TCC 거부 `E_TCC_DENIED`, 볼륨 프로브 시간 초과 `E_VOLUME_TIMEOUT`, 샌드박스 밖 `E_SANDBOX_VIOLATION`.
-  - 겹치는 루트(다른 루트의 하위/상위, 예: iCloud "데스크탑 및 문서" 동기화)는 허용한다. 수집기가 바깥 루트 순회에서 안쪽 루트 경로를 건너뛰므로 같은 파일이 두 항목이 되지 않는다(02 §10.6). 응답 `root.overlaps: ["root_1"]` 로 알리기만 한다. iCloud 동기화 경로(`icloud_drive` 루트, 실제 경로가 iCloud Drive 아래인 루트, “데스크탑 및 문서” 동기화가 켜진 `~/Desktop`·`~/Documents`)는 `scan_roots.icloud_synced=1` 로 판정되고(04 §1), 그 항목은 `keep/keep_always/defer` 만(02 §10.1 예외 2). `Root` 객체에 `icloud_synced`(bool) 필드를 포함한다.
+  - 겹치는 루트(다른 루트의 하위/상위, 예: iCloud "데스크탑 및 문서" 동기화)는 허용한다. 수집기가 바깥 루트 순회에서 안쪽 루트 디렉터리를 **경로가 아니라 `(dev, inode)` 비교로** 건너뛰므로(리뷰 B1) 같은 파일이 두 항목이 되지 않는다(02 §10.6). 응답 `root.overlaps: ["root_1"]` 로 알리기만 한다. iCloud 동기화 경로(`icloud_drive` 루트, 실제 경로가 iCloud Drive 아래인 루트, “데스크탑 및 문서” 동기화가 켜진 `~/Desktop`·`~/Documents`)는 루트 단위로 `scan_roots.icloud_synced=1` 로 판정된다 — fs 수집기가 매 스캔 계산(M1, 리뷰 #9a), 항목별 `allowed_actions` 는 M2 정책. 그 항목의 허용 동작은 §2 공유 객체의 iCloud 규칙(02 §10.1 예외 2, C11): dataless 는 파일 동작 전부 불가, 다운로드된 파일은 `move`/`archive`/`rename` 불가, `trash` 는 해제 게이트가 참이고 사람의 항목 단위 결정일 때만.
 - `root.set`: iCloud 동기화 여부를 손으로 지정(09 §12 V17 의 대체 수단)하거나 `max_depth` 변경. 지정 후 그 루트의 열린 항목 `allowed_actions` 를 즉시 재계산(`items_reevaluated`); `yes` 로 바꿔 막히게 된 동작의 기존 결정은 철회되어 `proposed` 로 돌아간다. `no` 는 제한을 푸는 방향이므로 사람 작업 — Skill 금지(R4), MCP 비노출(02 §10.3). 인자를 하나도 안 주면 `E_USAGE`.
 - `root.remove`: 소프트 삭제(`removed_at`). 그 루트의 열린 항목은 다음 `scan.run` 에서 04 문서의 "루트 밖" 규칙으로 `stale` 이 된다. `open_items_affected` 는 그 예상 수.
 
@@ -290,14 +316,14 @@ JSON 인자: `run_id`, `since`, `event`(배열), `root_id`. `--run` 과 `--since
  "headline": "임시 파일과 설치 파일이 늘어났습니다. 작업 문서 5개는 관련 프로젝트로 이동할 수 있습니다.",
  "stats": {"new_files": 42, "modified_files": 18, "deleted_files": 3, "new_apps": 2, "new_packages": 1,
            "items_total": 15, "items_open": 15, "items_decided": 0, "carried_over": 2, "deferred": 1,
-           "pending_plan_bytes": 0, "trash_planned": 0, "suppressed_today": 3, "vault_new": 1, "vault_findings_open": 2},
+           "pending_plan_bytes": 0, "trash_planned": 0, "suppressed_today": 3, "vault_new": 1, "vault_findings_open": 2, "vault_expiring_soon": 1, "vault_expiring_critical": 0, "vault_expiring_min_days": 23, "vault_expiring_nearest_kind": "apple_signing"},
  "reclaimable_bytes": 2147483648,
  "estimated_review_minutes": 1,
  "groups": [Group, …],
  "pending_plan": {"item_count": 0, "bytes": 0},
  "last_scan": {"run_id": "run_12", "finished_at": "2026-11-24T12:03:12.000Z", "status": "partial", "warning_codes": ["W_DATALESS_SKIPPED"]}}
 ```
-- `stats` 키 = 06 `review_sessions.stats_json` 키 그대로.
+- `stats` 키 = 06 `review_sessions.stats_json` 키 그대로. `vault_expiring_min_days` = 열린 만료 발견 사항 중 가장 가까운 만료까지 남은 일수(없으면 `null`), `vault_expiring_nearest_kind` = 그 자산의 `vault_asset_kind` 값만 — 이름·경로·subject 는 절대 넣지 않는다(스케줄러는 `review.summary` 만 부를 수 있어 알림 문구가 이 키에서 나온다, 02 §7).
 - `reclaimable_bytes`: 열린 항목 중 제안 또는 결정이 `trash` 인 것의 크기 합(FR-DR-001 "확보 가능 용량"). 저장하지 않는 파생값.
 - `estimated_review_minutes`: FR-DR-001 공식. 그룹 수 = `groups` 중 열린 항목이 1개 이상인 그룹.
 - `headline`: `intel` 이 생성하는 한 문장(04). 비밀·환자 정보 금지. 없으면 `null`.
@@ -409,7 +435,9 @@ JSON 인자: `item_ids`(배열) 또는 `group_id`(둘 중 정확히 하나), `ac
 | `archive` | `dest` 를 받지 않는다(주면 `E_USAGE`). 목적지는 `plan.create` 가 `config.archive.root` 기준 `<root>/<YYYY>/<MM>/<원래 이름>` 으로 계산(06 `decisions.dest_path=NULL`, 02 §9). `archive.root` 가 비어 있으면 `E_ARCHIVE_TARGET_MISSING`(결정 시점 검사 — 접근 가능 여부는 계획·실행 시점에 다시 검사). |
 | `rename` (M6) | `dest` = **같은 디렉터리** 안의 새 전체 경로(02 §5.3). 다른 디렉터리면 `E_USAGE`, 이미 있으면 `E_DEST_EXISTS`. M6 전에는 `allowed_actions` 에 없고 `blocked_reasons.rename="not_yet_available"`. |
 | `defer` | `defer_until` 기본 = 다음 리뷰 날짜. 과거·오늘 날짜 → `E_USAGE`. 상태는 `proposed` 유지. |
-| `keep_always` | suppression 생성(06 §4.3). 응답 항목의 `decision.suppression_id`. |
+| `keep_always` | suppression 생성(06 §4.3). 응답 항목의 `decision.suppression_id`. 에이전트 채널이면 `keep` 으로 기록 + `W_OWNER_ONLY_DOWNGRADED`(§1.8). |
+| iCloud `trash` | iCloud 동기화 항목(`icloud_synced=true`)의 `trash` 는 실효 채널 `cli`·`app` 의 항목 지정 결정만(리뷰 #5). `skill`·`mcp` → `E_PROTECTED`(`details.reason="owner_only"`). 같은 조건을 `plan.create` V3 가 `decisions.channel` 로 다시 검사(08). |
+| 비밀 내용 파일 | `sensitivity=secret` 이면 보호 등급과 무관하게 `move`·`archive` 불가, 그룹 결정에서 제외(`blocked_reasons` 이유 코드 `secret_content`, 리뷰 #6). |
 | `note` | 최대 2,000자, `decisions.note_enc` 로 암호화. 필드 키를 쓸 수 없으면 메모만 버리고 경고 `W_FIELD_KEY_UNAVAILABLE`(결정은 기록). |
 | 파일 | 어떤 경우에도 파일을 바꾸지 않는다(FR-DR-005). `files_changed` 는 항상 `false`(계약 테스트 고정값, 에이전트에게 알리는 용도). |
 
@@ -549,7 +577,13 @@ JSON 인자: `item_ids` 또는 `last: true`. `--last` = 이 채널에서 가장 
 | `resumable` | `state='executing'` 이고 `running` 연산 0개이고 `pending` 연산 ≥ 1개이며 승인 유효 기간(24시간, 02 §10.3-5) 안이면 `true`. 그 외 `false`. 다시 `plan apply` 하면 남은 연산만 진행(08 §7.7) |
 | `approval` | `null` 또는 `{"id":"apv_7","method":"native_dialog","channel":"skill","approved_at":"…","expires_at":"…","icloud_ack":true}`(`expires_at` = `approved_at`+24h 파생값, `icloud_ack` = 06 `approvals.icloud_ack`) |
 
-`plan.show`/`plan.create` 의 `data` = `{"plan": Plan, "operations": [...], "summary": {...}, "excluded": [...]}`. `operations[]` 필드는 08 §5.2(`seq, item_id, op, display_name, display_path, dst_display_path, size_bytes, cross_device, state, error_code, undo_state`)에 `icloud_propagates`(bool, 06 — iCloud 동기화 경로의 `trash` 만 `true`, `plan_hash` 정규 객체에 포함)와 이 문서의 `id`(`op_`), `creates_dirs`(03 R12)를 더한다. `summary.icloud_propagates_count` = 그런 연산 수. `excluded[]` = `{"item_id","code","reason"}`(계획에서 빠진 항목과 이유).
+`plan.show`/`plan.create` 의 `data` = `{"plan": Plan, "canonical": {...}, "canonical_recomputable": true, "operations": [...], "summary": {...}, "excluded": [...]}`.
+
+**`canonical`**(리뷰 B2, 09 G12): `plan_hash` 를 계산하는 08 §5.1 정규 객체를 **필드 하나 빠짐없이 그대로** 돌려준다 — `schema`("dayclose.plan.v1"), `plan_id`, `device_id`, `ops[]`(`seq`, `item_id`, `op`, `src`, `src_kind`, `dst`, `create_dirs`, `cross_device`, `icloud_propagates`, `pre{dev, inode, size, mtime_ns, sha256}`), `totals{op_count, total_bytes}`. core 는 해시 계산과 같은 함수(DB 행 재조회)로 만든다. 앱(`DayCloseKit.PlanHash`)은 서명 전에 이 객체를 08 의 직렬화 규칙(`sort_keys`, `separators=(",",":")`, `ensure_ascii=True`, 접두 `b"dayclose.plan.v1\n"`)으로 다시 해시해 `plan.plan_hash` 와 비교하고, 화면의 연산 행은 `canonical.ops` 를 `seq` 로 `operations[]` 표시 필드와 이어 붙여 그린다(표시와 해시 대상이 같은 데이터). 다르면 서명하지 않는다(03 §4.6).
+- `canonical_recomputable`: 경로에 비 UTF-8 바이트(서로게이트 이스케이프 `\udcxx`)가 있으면 `false` — Swift `String` 은 외톨이 서로게이트를 담을 수 없어 앱이 다시 계산할 수 없다. 이때 앱은 서명하지 않고 `app_signature` 없이 보내 core 가 `native_dialog` 로 넘어간다(저하 모드, 08 §6.5).
+- `canonical` 은 채널 `cli`·`app` 에서만 담는다. `skill`·`mcp` 에서는 생략(환자 자료의 원 경로가 들어 있으므로, 02 §5.6 투영).
+- 계약 픽스처(§4.1): `contracts/fixtures/plan.show.<case>.json` — 봉투 + 기대 `plan_hash`. Python 계약 테스트와 `swift test` 가 같은 파일로 해시를 계산해 일치를 확인한다(11 §8).
+ `operations[]` 필드는 08 §5.2(`seq, item_id, op, display_name, display_path, dst_display_path, size_bytes, cross_device, state, error_code, undo_state`)에 `icloud_propagates`(bool, 06 — iCloud 동기화 경로의 `trash` 만 `true`, `plan_hash` 정규 객체에 포함)와 이 문서의 `id`(`op_`), `creates_dirs`(03 R12)를 더한다. `summary.icloud_propagates_count` = 그런 연산 수. `excluded[]` = `{"item_id","code","reason"}`(계획에서 빠진 항목과 이유).
 
 - 표시 규칙: `display_path`/`dst_display_path` 는 `~` 축약 디렉터리. `sensitivity=patient` 항목의 `display_name` 은 `cli`/`app` 에서 "환자 관련 파일" 고정 문구(08 §5.2), `skill`/`mcp` 에서 `display_name`·`display_path`·`dst_display_path` 모두 `null`(02 §5.6). 보안 자산은 계획에 존재할 수 없다.
 - `archive` 연산의 목적지는 `<archive.root>/<YYYY>/<MM>/<원래 이름>`, 연·월 = 원본 **mtime** 의 로컬 날짜(08 §4.4). 충돌 이름은 08.
@@ -558,8 +592,8 @@ JSON 인자: `item_ids` 또는 `last: true`. `--last` = 이 채널에서 가장 
 #### `plan.create` — `dayclose plan create (--items ITEM_ID,... | --all-decided)` (M5, W)
 
 JSON 인자: `item_ids` 또는 `all_decided: true`.
-- 대상: `state=decided` 이고 `decided_action ∈ file_decision_action`(`trash, move, archive, rename`, 06 §3) 인 항목. 그 외가 `--items` 에 있으면 `excluded[]`(`E_INVALID_STATE`)로 빼고 진행. 전부 빠지면 `E_NOT_FOUND`(`details.reason="no_plannable_items"`).
-- `archive` 항목: `archive.root` 미설정·접근 불가 → `excluded[]`(`E_ARCHIVE_TARGET_MISSING`).
+- 대상 선정은 08 §4.1 그대로(리뷰 #14): `--items` 의 각 항목은 존재하고 `state ∈ {decided, failed}`, `decided_action ∈ file_decision_action` 이어야 하며 **하나라도 어긋나면 명령 전체** `E_INVALID_STATE`(details 에 해당 `item_id`·현재 상태, 부분 계획 없음). 대상이 0개 → `E_INVALID_STATE{reason:"no_eligible_items"}`. 대상 선정을 통과한 뒤의 항목별 검증(08 §4.2 V1~V9) 실패는 `excluded[]` 로 빼고 계획을 만들며, 전부 빠지면 `E_INVALID_STATE{reason:"no_eligible_items","excluded":[…]}`.
+- `archive` 항목: `archive.root` 미설정·접근 불가 → `excluded[]`(`E_ARCHIVE_TARGET_MISSING`). 목적지 연·월 = 원본 **mtime** 의 로컬 날짜(08 §4.4).
 - 생성 시점 정책 재평가: 허용 안 됨 → `excluded[]`(`E_PROTECTED`), 대상 소멸 → 항목 `stale` + `excluded[]`(`E_STALE`).
 - 기기 검사 실패 → `E_DEVICE_MISMATCH`(+`W_DEVICE_MISMATCH`, 02 §10.3-4a). 파일을 바꾸지 않는다(FR-EX-001).
 
@@ -571,23 +605,25 @@ JSON 인자: `item_ids` 또는 `all_decided: true`.
 
 JSON 인자: `plan_id`, `hash`(64자 전체), stdio 전용 `app_signature`(02 §5.3). 응답 `{"plan": Plan(state=approved, approval={…})}`.
 
-- 수단은 **core 가 환경으로 고른다**(호출자가 고르는 플래그·인자 없음). 순서와 조건은 02 §10.3-1 이 계약이다: ① 샌드박스+`DAYCLOSE_TEST_APPROVE=1` → `test` ② 샌드박스인데 TEST_APPROVE 없음 → `E_APPROVAL_DENIED` ③ 채널 `app` + 등록된 앱 키(`core.app_key`)로 검증되는 `app_signature` → `app_button` (없거나 실패하면 거부하지 않고 다음 순서로) ④ `/dev/tty` 를 열 수 있고 에이전트 표식 없음 → `cli_tty` ⑤ 그 외 → `native_dialog`. 채널 `mcp`·`schedule` → `E_APPROVAL_DENIED`. GUI 세션 없음 → `E_APPROVAL_DENIED`(`reason:"no_gui"`).
+- 수단은 **core 가 환경으로 고른다**(호출자가 고르는 플래그·인자 없음). 순서와 조건은 02 §10.3-1 이 계약이다: ① 샌드박스+`DAYCLOSE_TEST_APPROVE=1` → `test` ② 샌드박스인데 TEST_APPROVE 없음 → `E_APPROVAL_DENIED` ③ 채널 `app` + 등록된 앱 키(`core.app_key`)로 검증되는 `app_signature` → `app_button` (없거나 실패하면 거부하지 않고 다음 순서로) ④ `/dev/tty` 를 열 수 있고 에이전트 표식 없음 **그리고 GUI 세션 없음**(B3, 검증 전) → `cli_tty` ⑤ 그 외 → `native_dialog`. 채널 `mcp` → `E_APPROVAL_DENIED{channel_not_allowed}`, 채널 `schedule` → `api` 진입에서 `E_PROTECTED{channel_not_allowed}`(02 §7). GUI 세션 없음 → `E_APPROVAL_DENIED`(`reason:"no_gui"`).
 - `--hash` 접두사만 → `E_USAGE`. 현재 해시와 다르면 사람에게 묻기 전에 `E_APPROVAL_MISMATCH`. `draft` 아님·이미 승인됨 → `E_INVALID_STATE`. 기기 불일치 → `E_DEVICE_MISMATCH`.
-- 대화상자·TTY 문구는 core 가 계획에서만 만든다(연산 수·용량·동작별 개수·`plan_hash_short`). 호출자가 준 문자열은 넣지 않는다.
+- 대화상자·TTY 문구는 core 가 계획에서만 만든다(연산 수·용량·동작별 개수·`plan_hash_short`). 호출자가 준 문자열은 넣지 않는다. `DAYCLOSE_HOME` 이 기본값(`~/Library/Application Support/DayClose/`)이 아니면 모든 승인 문구에 **별도 줄** "DayClose 데이터 위치: <경로>" 를 넣는다(리뷰 #19c — 다른 DB 로 보호 규칙이 사라진 상태를 사람이 알아보게).
+- M7 이후 V11 통과 Mac: `native_dialog` 는 `dayclose-native confirm`(앱 번들 안 헬퍼, Secure Enclave 서명을 `core.app_key` 로 검증)이다. 헬퍼가 없거나 검증에 실패하면 osascript 로 내려가지 않고 `E_APPROVAL_DENIED{reason:"confirm_unverified"}`(08 §6.5).
+- `cli_tty`(리뷰 B3): 에이전트 표식 없이 pty 로 도는 에이전트(예: Codex 의 확인되지 않은 실행 방식)가 8자 프롬프트를 볼 수 있으므로, 실기기 확인(09 V 항목 추가 요청) 전까지 `cli_tty` 는 **GUI 세션이 없을 때만**(SSH 등) 고른다. GUI 가 있으면 TTY 가 있어도 `native_dialog`.
 - **iCloud 전파 확인**(02 §10.3-7, FR-EX-008): `icloud_propagates` 연산이 N≥1개면 `cli_tty` 요약과 대화상자에 **별도 줄** "N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다" 를 넣고, 승인 행에 `icloud_ack=1` 을 기록한다(응답 `approval.icloud_ack`). 앱(`app_button`)은 승인 화면에 같은 줄을 보여 주고 서명이 그 해시를 덮는다. 그런 연산이 없으면 `icloud_ack=false`.
 - 사람 확인을 기다리는 동안 쓰기 잠금을 잡지 않는다(02 §10.3-6). 그래서 serve 의 write 레인이 대화상자 120초 동안 막히지 않는다.
 
 #### `core.app_key` — `dayclose app-key register|show|revoke` (M5, W)
 
-02 §5.3 이 명령 ID 하나에 세 하위 동작을 둔다. JSON 인자 `action`(`register|show|revoke`), `register` 는 `public_key`(SPKI DER base64). 응답 `{"registered": true, "fingerprint_short": "9f1c2a7b", "registered_at": "…"}`. `register`/`revoke` 는 지문 앞 8자를 보여 주는 사람 확인(`native_dialog`/`cli_tty`, 08 §6.5) 필수 — 확인 거부 `E_APPROVAL_DENIED`. 앱 온보딩에서만 쓴다. Skill 금지, MCP 비노출(02 §10.3).
+02 §5.3 이 명령 ID 하나에 세 하위 동작을 둔다. JSON 인자 `action`(`register|show|revoke`), `register` 는 `public_key`(SPKI DER base64). 응답 `{"registered": true, "fingerprint_short": "9f1c2a7b", "registered_at": "…"}`. `register` 는 **실효 채널 `app` 에서만** 받는다(리뷰 #4). `revoke` 는 채널 제한이 없다(키를 없애는 쪽이므로 — 사람 확인은 필수) — `cli`·skill 승격·`mcp` 는 `E_PROTECTED{reason:"owner_only"}`. `register`/`revoke` 는 지문 앞 8자를 보여 주는 사람 확인(`native_dialog`, 08 §6.5) 필수, 확인 문구에 "앱 설정에서 방금 [승인 키 만들기]를 누른 경우에만 승인하세요" 를 넣는다. 확인 거부 `E_APPROVAL_DENIED`. 앱은 기동할 때마다 `app-key show` 의 지문을 자기 Secure Enclave 공개키와 비교하고 다르면 경고하며 `revoke` 를 제안한다(03). Skill 금지, MCP 비노출(02 §10.3).
 
 #### `plan.apply` — `dayclose plan apply PLAN_ID [--dry-run]` (M5, W, F)
 
 `data` 형태는 08 §7.6.3: `{"plan": Plan, "operations": [{op_id, seq, item_id, op, state, error_code, actual_dst_display_path, undo_state, details}], "resumable": bool}`.
 - 전부 `done` → `ok=true`. 하나 이상 **시도**했고 전부 `done` 은 아님(시도했는데 `done` 0개 포함, 계획 `failed`) → `ok=false`, `E_PARTIAL`, 종료 8, `data` 동반(02 §5.5).
-- 전역 검사(08 §7.1 G1~G10)에서 막혀 아무것도 시도하지 않았으면 그 코드, `data=null`: `E_LOCKED`, `E_INVALID_STATE`(`recover_required` 포함), `E_APPROVAL_REQUIRED`(`approval_not_audited`, `approval_expired`, `icloud_ack_missing` 포함), `E_APPROVAL_MISMATCH`(재계산 해시 불일치), `E_SANDBOX_VIOLATION`/`E_PATH_OUTSIDE_ROOTS`, `E_VOLUME_TIMEOUT`/`E_VOLUME_UNAVAILABLE`, `E_ARCHIVE_TARGET_MISSING`, `E_APPROVAL_DENIED`(채널 `schedule`), `E_DEVICE_MISMATCH`.
+- 전역 검사(08 §7.1 G1~G10)에서 막혀 아무것도 시도하지 않았으면 그 코드, `data=null`: `E_LOCKED`, `E_INVALID_STATE`(`recover_required` 포함), `E_APPROVAL_REQUIRED`(`approval_not_audited`, `approval_expired`, `icloud_ack_missing` 포함), `E_APPROVAL_MISMATCH`(재계산 해시 불일치), `E_SANDBOX_VIOLATION`/`E_PATH_OUTSIDE_ROOTS`, `E_VOLUME_TIMEOUT`/`E_VOLUME_UNAVAILABLE`, `E_ARCHIVE_TARGET_MISSING`, `E_PROTECTED{channel_not_allowed}`(채널 `schedule`, `api` 진입), `E_DEVICE_MISMATCH`.
 - **멈추기**(08 §7.6.2 가 계약, 02 §5.5): 프로토콜 취소 요청은 없다. 유일한 수단은 프로세스 신호 — CLI 는 Ctrl-C(`SIGINT`), 앱은 자식 `serve` 프로세스에 `SIGINT`. 진행 중인 이름변경은 끝까지, 진행 중인 복사는 임시 파일을 지우고 `pending` 으로 되돌린 뒤 남은 연산을 시작하지 않는다. 결과는 `E_CANCELLED` 가 **아니라** `E_PARTIAL` + `data.resumable=true`(계획 `executing`). 사용자는 다시 `plan apply`(재개) 또는 `plan cancel` 을 고른다. 이미 `done` 인 연산은 되돌리지 않는다(원하면 `plan undo`).
-- `--dry-run`: 파일·DB 를 바꾸지 않고 각 연산의 사전조건을 검사. `operations[].precheck: ok | stale | protected | dest_exists | volume_unavailable | volume_timeout | permission`. 잠금 불필요, 감사 기록 없음. 기기 불일치면 `E_DEVICE_MISMATCH`.
+- `--dry-run`: 파일·DB 를 바꾸지 않고 각 연산의 사전조건을 검사. `operations[].predicted ∈ {"ok", <오류 코드>}`(08 §7.8, 리뷰 #14). 잠금 불필요, 감사 기록 없음. 기기 불일치면 `E_DEVICE_MISMATCH`.
 - 진행 이벤트 `phase=apply`: `{"event":"progress","command":"plan.apply","phase":"apply","op_id":"op_33","done":1,"total":3,"ts":"…"}`.
 - 사람용: 연산별 한 줄 + 끝에 `되돌리기: dayclose plan undo pln_7` (중단이면 `재개: dayclose plan apply pln_7 · 취소: dayclose plan cancel pln_7`).
 
@@ -598,6 +634,7 @@ JSON 인자: `plan_id`, `hash`(64자 전체), stdio 전용 `app_signature`(02 §
 #### `plan.undo` — `dayclose plan undo PLAN_ID [--op OP_ID]... [--on-conflict fail|rename]` (M5, W, F)
 
 JSON 인자: `plan_id`, `op_ids`, `on_conflict`(기본 `fail`). 연산마다 파일 호출 전에 `undo_state='undoing'` 을 커밋한다(06 §4.5) — 크래시 시 `plan.recover` 가 판정. 응답 `{"plan": Plan, "operations": [{op_id, undo_state, undo_error_code, restored_display_path}]}`.
+- 보호 재평가(리뷰 #15, 08 §11): 현재 위치가 활성 저장소 안·git 추적, vault 자산, dataless, iCloud 동기화 경로면 `undo_failed` + `E_PROTECTED`.
 - 원위치 존재: `fail` → `undo_failed`(`E_DEST_EXISTS`), `rename` → 08 의 충돌 회피 이름. 되돌릴 수 없음 → `undo_failed`(`E_UNDO_IMPOSSIBLE`, `details.reason` = `trash_emptied` | `gone` | `edited_after_move` 등, 08 §11). 휴지통 접근 EPERM 은 `E_TCC_DENIED`(retryable). 일부 실패 → `E_PARTIAL`.
 - 기기 불일치 → `E_DEVICE_MISMATCH`. Skill 은 사용자 명시 요청 시만(§8.3), MCP 비노출.
 
@@ -618,6 +655,7 @@ JSON 인자: `plan_id`, `op_ids`, `on_conflict`(기본 `fail`). 연산마다 파
 | `ai.key.set` (W) | `dayclose ai key set PROVIDER` (키는 stdin 으로만) | `{"provider":"anthropic","key_present":true}` |
 | `ai.key.remove` (W) | `dayclose ai key remove PROVIDER` | `{"provider":"anthropic","key_present":false}` |
 
+- 외부 공급자 전송 규칙(07, 리뷰 #17): `protection=active_repo` 항목은 `local_only`, 프로젝트 이름은 `ai.send_project_names=true` 일 때만 외부로. `--dry-run` 요약에 `project_names_sent: bool` 을 포함한다.
 - `blocked_reason`: `disabled` | `provider_none` | `external_not_allowed` | `key_missing` | `null`(`usable=true`). 02 §9 의 옵트인 조건(`enabled=true`, 외부면 `allow_external=true`, Keychain 키 존재). `ai.status` 는 네트워크를 쓰지 않는다.
 - `ai.classify`: `usable=false` → `E_AI_DISABLED`(`details.reason`). 게이트가 막은 항목은 `items_blocked`(FR-PM-005). 공급자 시간 초과·연결·HTTP 오류는 그 배치만 실패하고 경고 `W_AI_REQUEST_FAILED`, 응답 검증 실패는 `W_AI_OUTPUT_REJECTED`(반영 없음) — 02 §11. `--dry-run`: 게이트를 통과할 페이로드의 **요약**(항목 수, 필드 목록, 막힌 수와 이유별 수)만 돌려주고 전송·저장하지 않는다(`dry_run=true`, `suggestions_updated=0`). 페이로드 본문은 응답에도 없다. 취소 가능(§3.6, 배치 경계, `E_CANCELLED`).
 - `ai.key.set`: CLI 는 stdin 에서만 읽는다(TTY 면 무에코 입력, 파이프 허용, 인자·환경 변수로 받지 않음). serve 는 요청 `args.key`. 키 값·길이·접두사는 응답·로그·감사·`error.details` 어디에도 없다. `PROVIDER` ∈ `ollama|anthropic|openai`(키가 필요 없는 `ollama` 는 `E_USAGE`). Keychain `com.dayclose.ai`/`<provider>`. Skill 금지, MCP 비노출.
@@ -634,7 +672,7 @@ JSON 인자: `plan_id`, `op_ids`, `on_conflict`(기본 `fail`). 연산마다 파
 |---|---|---|
 | 보관 폴더 지정 | `dayclose config set archive.root /Volumes/External/DayCloseArchive` | 기기별(02 §8.1). 경로는 이미 존재해야 함(없으면 `E_NOT_FOUND`, `config` 는 사용자 영역에 디렉터리를 만들지 않음). 암호화되지 않은 볼륨이면 `W_ARCHIVE_UNENCRYPTED`(차단 안 함). `/Volumes/*` 는 저장 전 프로브(시간 초과 `E_VOLUME_TIMEOUT`). 빈 문자열 = 해제. |
 | 결정 | `dayclose decision set … --action archive` | `--dest` 없음(§2.7). |
-| 계획 | `dayclose plan create …` | 목적지 `<root>/<YYYY>/<MM>/<원래 이름>` 계산, 연/월 폴더는 `creates_dirs`. `YYYY/MM` 은 항목의 `review_date` 기준(08 확인 요청 — 08 이 다른 기준을 정하면 그쪽이 우선). |
+| 계획 | `dayclose plan create …` | 목적지 `<root>/<YYYY>/<MM>/<원래 이름>` 계산, 연/월 폴더는 `creates_dirs`. `YYYY/MM` 은 원본 파일의 **mtime** 로컬 날짜(02 §9, 08 §4.4). |
 | 승인·실행·되돌리기 | `plan approve` / `plan apply` / `plan undo` | 볼륨 간이면 복사→검증→원본 제거(02 §10.2-5). undo 는 원위치 이동(FR-AB-001). |
 | 보관 기록 조회 | `dayclose item list --state executed` + `item.show` 의 `operations` / `plan show` | 별도 기록 테이블 없음 — `plan_operations(op='archive')` 가 기록. |
 | 복원 | `dayclose plan undo PLAN_ID --op OP_ID` | 별도 restore 명령 없음. 오래되어 undo 대상이 아니게 된 보관본은 사람이 Finder 로 꺼낸다(다음 스캔이 새 파일로 인식). |
@@ -682,7 +720,7 @@ DayClose.app ──spawn──▶ dayclose serve --stdio [--home PATH] [--log-le
 | `id` | 예 | 문자열 1~64자 `[A-Za-z0-9._:-]`. 처리 중인 다른 요청과 같으면 `E_USAGE`(`reason="duplicate_id"`). |
 | `command` | 예(`control` 이 없을 때) | 02 §5.3 명령 ID. `core.serve`, `mcp.serve` → `E_USAGE`. |
 | `args` | 아니오 | JSON 인자(각 명령 절). 기본 `{}`. 스키마 위반 → `E_USAGE`(`details.errors[]`: JSON 포인터와 메시지). |
-| `channel` | 아니오 | 기본 `app`. `skill`·`mcp`·`schedule` 도 허용(테스트·도구용), `test` 는 샌드박스에서만. |
+| `channel` | 아니오 | 기본 `app`. `skill`·`mcp`·`schedule` 도 허용(테스트·도구용), `test` 는 샌드박스에서만. 스케줄러(`schedule` 채널)가 부를 수 있는 명령은 정확히 둘 — `scan.run` 과 `review.summary`(02 §7). 인증서 만료 수는 `review.summary.stats` 의 `vault_expiring_soon`·`vault_expiring_critical` 에서 얻으므로 `vault.health` 는 부르지 않는다. 그 밖의 명령은 `plan.approve`·`plan.apply` 를 포함해 core 가 `api` 진입에서 `E_PROTECTED{reason:"channel_not_allowed"}` 로 거부한다(02 §7). 채널 `mcp` 의 `plan.approve` 는 `E_APPROVAL_DENIED{reason:"channel_not_allowed"}` 그대로 |
 | `progress` | 아니오 | `true` 면 이 요청의 진행 이벤트를 stdout 으로. |
 | `wait_lock` | 아니오 | 초, 기본 10(02 §5.2 `--wait-lock`). |
 | `contract_version` | 아니오 | 주면 core 값과 같아야 함. 다르면 `E_USAGE`(`reason="contract_version_mismatch"`). |
@@ -754,6 +792,7 @@ core/src/dayclose/api/schemas/<command>.json   # {"args":…, "data":…} — co
 
 ### 4.2 픽스처 규칙
 
+- 해시 픽스처(리뷰 B2): `plan.show.ok.json`(일반), `plan.show.ok-icloud.json`(`icloud_propagates=true`), `plan.show.ok-multi.json`(trash·move·archive 섞임, `create_dirs`·`cross_device`·`pre.sha256` 있음), `plan.show.ok-nfd.json`(NFD 한글·공백·이모지 경로), `plan.show.ok-nonutf8.json`(`canonical_recomputable=false`). 각 파일의 `data.plan.plan_hash` 가 `data.canonical` 의 08 §5.1 해시와 같아야 한다.
 - 이름: `<command_id>.<case>.json`. `case` = `ok`, `ok-<변형>`, `E_<CODE>`(예 `decision.set.ok-group-skipped.json`, `plan.apply.E_PARTIAL.json`, `error.E_NOT_INITIALIZED.json` 은 명령 무관 오류).
 - 생성: `scripts/gen-fixtures.py`(샌드박스 시나리오 실행 → 봉투 저장). 비결정 필드(`meta.request_id`, `meta.duration_ms`, `data.duration_ms`, 시각, `device_id`, 샌드박스 절대경로 접두사)는 정규화 함수로 치환(`"<req>"`, `0`, `"2026-11-24T00:00:00.000Z"`, `"/SANDBOX"`). 정규화 규칙은 11 문서의 계약 테스트와 공유.
 - 모든 명령은 최소 `ok` 1개 + 고유 오류 코드마다 1개. `E_PARTIAL` 처럼 `data` 예외가 있는 경우 반드시 포함.
@@ -793,12 +832,12 @@ MCP 열은 02 §10.3 의 비노출 목록과 정확히 같다(그 목록 밖의 
 |---|---|---|---|---|
 | `core.version`, `core.doctor` | ✓ | ✓ | ✓(사전 승인) | ✓ |
 | `core.schema` | ✓ | ✓ | ✓ | ✗(중복) |
-| `core.init` | ✓ | ✓ | 사용자 요청 시 | ✗ |
+| `core.init` | ✓ | ✓ | ✗(core 거부 §1.8 — 사용자가 직접) | ✗ |
 | `core.app_key` | ✓ | ✓(앱 온보딩) | ✗ | ✗ |
 | `config.get/list` | ✓ | ✓ | ✓ | ✓ |
 | `config.set` | ✓ | ✓ | ✗(R4) | ✗ |
 | `root.list` | ✓ | ✓ | ✓ | ✓ |
-| `root.add/remove` | ✓ | ✓ | 사용자 요청 시 | ✗ |
+| `root.add/remove` | ✓ | ✓ | ✗(core 거부 §1.8) | ✗ |
 | `root.set` | ✓ | ✓ | ✗(R4) | ✗ |
 | `scan.run/list/show`, `change.list` | ✓ | ✓ | ✓ | ✓ |
 | `review.summary/close`, `group.*`, `item.*` | ✓ | ✓ | ✓ | ✓ |
@@ -810,7 +849,7 @@ MCP 열은 02 §10.3 의 비노출 목록과 정확히 같다(그 목록 밖의 
 | `rule.add` | ✓ | ✓ | 사용자 요청 시 | ✗ |
 | `rule.remove` | ✓ | ✓ | ✗(R4) | ✗ |
 | `suppression.list` | ✓ | ✓ | ✓ | ✓ |
-| `suppression.add` | ✓ | ✓ | 사용자 요청 시 | ✗ |
+| `suppression.add` | ✓ | ✓ | ✗(core 거부 §1.8) | ✗ |
 | `suppression.remove` | ✓ | ✓ | ✗(R4) | ✗ |
 | `plan.create/show/list/cancel` | ✓ | ✓ | ✓ | ✓ |
 | `plan.approve` | ✓ | ✓ | **승인 요청만**(§8.3) | ✗ |
@@ -912,7 +951,7 @@ policy:
 
 | 단계 | 에이전트 동작 | 사용자에게 | 분기 |
 |---|---|---|---|
-| 0. 점검 | `dayclose version` | — | `contract_version != 1` → "DayClose core 버전이 이 Skill 과 맞지 않습니다" 후 중단. 명령 없음 → 설치 안내만. `E_NOT_INITIALIZED` → "`dayclose init` 을 직접 실행해 주세요"(사용자가 원하면 에이전트가 실행 — 권한 확인 거침) |
+| 0. 점검 | `dayclose version` | — | `contract_version != 1` → "DayClose core 버전이 이 Skill 과 맞지 않습니다" 후 중단. 명령 없음 → 설치 안내만. `E_NOT_INITIALIZED` → "`dayclose init` 을 직접 실행해 주세요"(에이전트 채널에서는 core 가 `E_PROTECTED{owner_only}` 로 거부하므로 사용자가 터미널에서 직접) |
 | 1. 스캔 | 마지막 스캔(`review summary` 의 `last_scan`)이 1시간보다 오래됐으면 `dayclose scan run` | "오늘 변경 사항을 확인하는 중입니다" | `partial` → 건너뛴 루트를 한 줄로(`W_TCC_DENIED` 면 전체 디스크 접근 권한 안내) |
 | 2. 결산 | `dayclose review summary`, 보안 발견 사항이 있으면 `dayclose vault health` | 한 문단 요약: `headline`, 새 파일·수정·새 앱 수, 검토 대상(이월·보류 포함), 확보 가능 용량, 예상 시간. 이어서 그룹 표(§8.3.1) | 열린 항목 0 → "오늘은 정리할 것이 없습니다" 후 6단계로 |
 | 3. 결정 수집 | 사용자 답을 그룹/항목 결정으로 변환해 `dayclose decision set` | 기록 결과(적용 수, 보호로 제외된 수). "파일은 아직 바뀌지 않았습니다." | §8.3.2 |
@@ -993,6 +1032,7 @@ policy:
 
 - Codex 의 기본 샌드박스가 작업 디렉터리 밖 쓰기(`~/Library/Application Support/DayClose/`)를 막으면 W 명령이 `E_PERMISSION` 으로 실패한다. Skill 은 이 경우 "Codex 권한 설정에서 이 명령 실행을 허용해 달라"고 안내하고 우회하지 않는다.
 - 샌드박스 프로세스에서 `osascript` 대화상자가 뜨는지 확인 필요. 뜨지 않으면 5단계는 "터미널에서 직접 `dayclose plan approve …`" 안내로 대체(승인 수단이 없다고 승인을 건너뛰지 않는다).
+- pty·표식 없음(리뷰 B3): Codex 가 에이전트 표식 없이 pty 로 명령을 돌리면 `cli_tty` 의 8자 프롬프트가 에이전트 출력으로 간다. 실기기 확인 전까지 core 는 GUI 세션이 있으면 `cli_tty` 를 고르지 않는다(§2.11). 확인 항목은 09 에 추가 요청.
 - TCC: 터미널·Codex 에서 띄운 `dayclose` 는 그 부모 앱의 TCC 권한을 따른다(09). `W_TCC_DENIED` 는 그대로 사용자에게 전달.
 
 ---
@@ -1151,6 +1191,8 @@ MCP 와 Skill 은 같은 투영(§1.5)을 쓴다. 기준은 `sensitivity` 이고
 | G15 | 08 | 보관 연·월 기준 | 반영됨(원본 mtime, 08 §4.4) |
 | G16 | 02 §3·§10.4·§15.1 | `DAYCLOSE_TEST_NOW`·`DAYCLOSE_TEST_FAULT`, 감사 훅 가드, `system_path()` | 반영됨(개발 의존성 `hypothesis`·`jsonschema` 포함) |
 | G17 | 06 §4.4 | `plan.cancel` 의 `executing → partial\|failed\|cancelled` 전이(08 §7.10, 08 §19 R3) | 반영됨 |
+
+| G19 | 02 §11, 06 | 독립 리뷰 신설 이름: 경고 `W_OWNER_ONLY_DOWNGRADED`(#19b), `E_PROTECTED.details.reason` 값 `owner_only`(#19a·#4·#5)·`contains_protected_rule`(#3), `blocked_reason` 값 `secret_content`(#6), 설정 키 `ai.send_project_names`(#17)·`scan.content_scan_max_bytes`(#7). 10 은 리뷰 결정 파일의 이름 그대로 쓴다 | 반영됨(02 §5.6·§11, 06 `blocked_reason`) |
 
 철회: 보관 대상 테이블·`archive.*` 그룹·원격 암호화 백업 관련 요청 전부(범위 삭제), 발견 사항 확인 명령(05 의 항목 결정 규칙 채택).
 

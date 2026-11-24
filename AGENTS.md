@@ -38,9 +38,9 @@ DayClose 는 사용자의 파일을 옮기고 휴지통에 넣을 수 있는 프
 
 ## 3. 절대 안전 규칙
 
-1. **실제 사용자 파일을 테스트에서 건드리지 않는다.** 모든 테스트·데모는 임시 샌드박스에서: `DAYCLOSE_HOME=<tmp>/home`, `DAYCLOSE_SANDBOX=<tmp>`, 가짜 홈 `<tmp>/user/{Downloads,Desktop,...}`. `~`, `/Volumes/*`, 실제 `~/.ssh` 등을 테스트 대상으로 쓰지 않는다. `conftest.py` 의 가드를 끄거나 우회하지 않는다.
+1. **실제 사용자 파일을 테스트에서 건드리지 않는다.** 모든 테스트·데모는 임시 샌드박스에서: `DAYCLOSE_HOME=<tmp>/home`, `DAYCLOSE_SANDBOX=<tmp>`(`<tmp>` 는 사용자 임시 디렉터리 또는 `/private/tmp` 아래, 표식 파일 `<tmp>/.dayclose-sandbox` 필수 — 아니면 core 가 `E_SANDBOX_VIOLATION` 으로 시작을 거부, 02 §10.4), 가짜 홈 `<tmp>/user/{Downloads,Desktop,...}`. `~`, `/Volumes/*`, 실제 `~/.ssh` 등을 테스트 대상으로 쓰지 않는다. `conftest.py` 의 가드를 끄거나 우회하지 않는다.
 2. **기록된 사용자 승인 없이 파일을 변경하지 않는다.** 사용자 파일 변경 코드는 `core/src/dayclose/executor/` 에만 존재하며 `approvals` 행이 있는 plan 만 실행한다. Swift 앱·다른 Python 모듈에 `rename/move/remove/unlink/rmtree/trashItem/removeItem/moveItem` 을 쓰지 않는다(정적 검사가 막는다). 영구 삭제·휴지통 비우기 기능을 만들지 않는다.
-3. **에이전트는 승인을 요청할 수 있지만 수행할 수는 없다.** Skill 흐름에서 `plan approve` 를 호출하면 사용자 화면에 확인 대화상자가 뜰 뿐이다 — 그 대화상자·TTY 확인을 에이전트가 대신 누르거나 입력하지 않는다(접근성 스크립트, `script(1)`, 에이전트 표식 제거 등 우회 금지). MCP·스케줄러는 승인·실행 경로가 없다. 테스트 승인(`method=test`)은 `DAYCLOSE_SANDBOX`+`DAYCLOSE_TEST_APPROVE=1` 에서만.
+3. **에이전트는 승인을 요청할 수 있지만 수행할 수는 없다.** Skill 흐름에서 `plan approve` 를 호출하면 사용자 화면에 확인 대화상자가 뜰 뿐이다 — 그 대화상자·TTY 확인을 에이전트가 대신 누르거나 입력하지 않는다(접근성 스크립트, `script(1)`, 에이전트 표식 제거 등 우회 금지). MCP·스케줄러는 승인·실행 경로가 없다. 테스트 승인(`method=test`)은 **유효한 샌드박스**(02 §10.4) + `DAYCLOSE_TEST_APPROVE=1` 에서만. `DAYCLOSE_SANDBOX` 를 홈·`/Volumes`·기본 상태 디렉터리 쪽으로 넓히는 등 유효성 검사를 우회하는 시도를 하지 않는다. 보호를 약화하는 명령(02 §10.3 4b 의 소유자 전용 목록)은 에이전트 채널에서 core 가 거부하며, 에이전트는 이를 사람인 척(채널 위장·표식 제거) 우회하지 않는다. 테스트에서 이 명령들을 돌릴 수 있는 것은 유효한 샌드박스 안뿐이며(표식 승격만으로는 거부하지 않음, `--channel skill|mcp` 명시 시 거부 — 02 §10.3 4b), 샌드박스 밖에는 예외가 없다.
 4. **비밀·환자 정보를 외부 모델·로그에 보내지 않는다.** 파일 내용, OCR 텍스트, 키·토큰, 환경변수 값, gitleaks 매치, 보안 자산/환자 자료의 경로를 로그·봉투 `details`·커밋 메시지·이슈·외부 AI 요청에 넣지 않는다. 코딩 에이전트 자신도 개발 중 사용자의 실제 `~/.ssh`, `.env`, 인증서를 열어 보거나 출력하지 않는다.
 5. **보안 자산은 제자리 인벤토리만.** 일괄 이동·일괄 휴지통 대상에 넣지 않는다. 시드/복구 구문은 어떤 파생값도 저장하지 않는다.
 6. **저장소에 실제 비밀을 커밋하지 않는다.** 테스트용 키·인증서는 테스트 실행 시 생성(`tests/fixtures/secrets.py`). 커밋 전 `gitleaks git --staged` 또는 `gitleaks dir` 로 확인.
@@ -68,6 +68,7 @@ uv run dayclose --json version           # 실행 확인
 샌드박스 수동 실행:
 ```bash
 export DAYCLOSE_SANDBOX="$(mktemp -d)" DAYCLOSE_HOME="$DAYCLOSE_SANDBOX/home"
+touch "$DAYCLOSE_SANDBOX/.dayclose-sandbox"
 mkdir -p "$DAYCLOSE_SANDBOX/user/Downloads"
 uv run dayclose init --no-default-roots --json
 ```

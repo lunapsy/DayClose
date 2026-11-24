@@ -113,6 +113,8 @@ libc.renameatx_np(src_dir_fd, src_name, dst_dir_fd, dst_name, RENAME_EXCL)   # R
 - `vault_extra` 루트 안
 - iCloud 동기화 경로: `icloud_synced=1` 루트 아래, 그리고 루트 등록 여부와 무관하게 `~/Library/Mobile Documents/`, `~/Library/CloudStorage/` 아래. 목적지로는 언제나 금지, 원본으로는 X12 의 iCloud `trash` 예외만.
 
+**루트 소속 판정**(리뷰 B1): 경로가 어느 스캔 루트에 속하는지(허용 목록, `icloud_synced`, `origin_root_kind`)는 문자열 접두사가 아니라 **`(dev, inode)` 로** 판정한다 — 경로의 각 조상 디렉터리를 `lstat` 해 활성 루트 디렉터리들의 `(dev, inode)` 와 비교하고, 가장 가까운 일치가 소속 루트다. 이유: “데스크탑 및 문서” 동기화에서 `~/Desktop` 과 `~/Library/Mobile Documents/com~apple~CloudDocs/Desktop` 이 같은 디렉터리일 수 있고(09 V17), 경로 접두사로는 한 파일이 비동기 루트와 동기 루트에 동시에 속하거나 둘 다 아닐 수 있다. 같은 객체가 여러 루트에 속하면 `icloud_synced` 는 OR(하나라도 동기화면 동기화).
+
 **`move` 목적지 허용 목록**(`E_PATH_OUTSIDE_ROOTS` 판단): 활성 스캔 루트 중 `kind ∈ {downloads, desktop, screenshots, documents, projects, custom}` 의 경로 아래, 또는 `config.projects.roots` 아래. `icloud_synced=1` 루트·`vault_extra` 루트는 목적지가 될 수 없다. `archive.root` 아래는 `move` 의 목적지가 될 수 없다(보관은 `archive` 연산으로만 — 보관 폴더 내부 구조를 엔진만 관리).
 
 **`archive` 목적지**: `config.archive.root` 아래만(§4.4).
@@ -140,6 +142,7 @@ libc.renameatx_np(src_dir_fd, src_name, dst_dir_fd, dst_name, RENAME_EXCL)   # R
 | V1 | 대상 엔트리를 `lstat`: 없음, 또는 `(dev, inode)` 가 `review_items.subject_key`/`file_entries` 와 다름 | `E_STALE` | `decided → stale`(06 §4.1, `closed_reason='subject_gone'`). `failed` 항목은 그대로 |
 | V2 | 결정 이후 내용이 바뀜: `st_mtime_ns > decided_at(ms)×10⁶` 또는 `st_size != file_entries.size_bytes` | `E_STALE` | `decided` 유지 + `last_error_code='E_STALE'`(06 §4.1: “실행 대기 — 내용이 바뀜, 다시 판단 필요”). 이 표시가 있는 항목은 이후 `plan.create` 에서도 V2 와 같이 제외되며, 사용자가 `decision.undo` 후 재결정(또는 `decision.set` 재결정)해야 표시가 지워진다. 이유: 사용자가 본 적 없는 내용을 실행 대상으로 만들지 않는다 |
 | V3 | 지금 `policy` 로 다시 계산한 `allowed_actions` 에 결정 동작이 없음(보안 자산이 됨, 환자 패턴, 활성 저장소, 사용자 규칙 추가, `dataless`·`icloud_synced` — 02 §5.6 `blocked_reasons`) | `E_PROTECTED`(`details.reason` = 해당 `blocked_reason` 코드) | 변화 없음 |
+| V3a | 결정의 출처 조건: `sensitivity=secret` 또는 iCloud 동기화 항목인데 결정이 `scope='group'` 이거나 `actor='rule'`(리뷰 #5·#6, 02 §10.1). iCloud trash 는 추가로 `channel ∈ {cli, app}` | `E_PROTECTED` `{"reason":"secret_content"|"icloud_synced"}` | 변화 없음(사용자가 항목 단위로 다시 결정) |
 | V4 | 다른 활성 계획(`draft`/`approved`/`executing`)이 이 항목을 갖고 있음 | `E_INVALID_STATE` | 변화 없음 |
 | V5 | 원본이 허용 영역(§3.5) 밖 | `E_PATH_OUTSIDE_ROOTS` | 변화 없음 |
 | V6 | 원본 볼륨이 네트워크·읽기 전용, 또는 프로브 실패 | `E_VOLUME_UNAVAILABLE`/`E_VOLUME_TIMEOUT` | 변화 없음 |
@@ -151,7 +154,7 @@ libc.renameatx_np(src_dir_fd, src_name, dst_dir_fd, dst_name, RENAME_EXCL)   # R
 
 ### 4.3 `trash` 의 목적지
 
-- **iCloud 동기화 원본**(C11): 원본이 iCloud 동기화 경로(루트 실효값 `icloud_synced=1`, §3.5 경로 규칙, 또는 §9.2 의 실시간 신호 중 하나라도)에 있으면 — V3 가 이미 해제 게이트(02 §10.1 예외 2: `policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`)·dataless 아님·항목 단위 사용자 결정(`actor='user'`, `scope='item'`)을 확인했다 — 그 연산은 `icloud_propagates=1`. 하나라도 아니면 V3 에서 `E_PROTECTED`(`icloud_synced`/`dataless`)로 제외. `icloud_propagates` 는 정규 객체(§5.1)에 들어가 승인이 이 사실을 덮는다. 휴지통은 홈 볼륨의 `~/.Trash`(iCloud Drive 의 로컬 사본은 Data 볼륨) — 이름변경으로 iCloud 밖으로 나가는 것이 곧 다른 기기에서의 삭제다.
+- **iCloud 동기화 원본**(C11): 원본이 iCloud 동기화 경로(루트 실효값 `icloud_synced=1`, §3.5 경로 규칙, 또는 §9.2 의 실시간 신호 중 하나라도)에 있으면 — V3 가 이미 해제 게이트(02 §10.1 예외 2: `policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`)·dataless 아님·항목 단위 사람 결정(`decisions.actor='user'`, `scope='item'`, **`channel ∈ {cli, app}`** — 승격을 반영한 실효 채널, 리뷰 #5)을 확인했다 — 그 연산은 `icloud_propagates=1`. 하나라도 아니면 V3 에서 `E_PROTECTED`(`icloud_synced`/`dataless`)로 제외. `icloud_propagates` 는 정규 객체(§5.1)에 들어가 승인이 이 사실을 덮는다. 휴지통은 홈 볼륨의 `~/.Trash`(iCloud Drive 의 로컬 사본은 Data 볼륨) — 이름변경으로 iCloud 밖으로 나가는 것이 곧 다른 기기에서의 삭제다.
 
 - `dst_path = NULL`(06 주석대로 실행 시 결정, `actual_dst_path` 에 기록). 계획 단계에서는 휴지통 디렉터리 존재·쓰기 가능만 확인(§3.4 의 실패 → 제외 `E_PERMISSION`).
 - `cross_device = 0` 고정.
@@ -175,7 +178,7 @@ libc.renameatx_np(src_dir_fd, src_name, dst_dir_fd, dst_name, RENAME_EXCL)   # R
 3. `D = R/<YYYY>/<MM>`, 연·월 = 원본 `pre_mtime_ns` 의 로컬 날짜(결정: 파일 자신의 날짜. 02 §9 의 배치 규칙 `<root>/<YYYY>/<MM>/<원래 이름>`). 없는 `YYYY`, `MM` 은 `create_dirs`.
 4. `N = basename(src)` → 충돌 이름(§8) → `dst_path`.
 5. `cross_device` 는 `move` 와 같이.
-6. 민감도: `sensitivity=secret` 은 여기까지 올 수 없다(V3 — 보안 자산은 `archive` 불허). `sensitivity=patient` 는 허용(02 §10.1).
+6. 민감도: 보안 자산(`protection=security_asset`)은 여기까지 올 수 없다(V3). **그러나 자산이 아닌 `sensitivity=secret` 파일**(05 §3.15 임계값 미만의 엔트리 단위 `plaintext_secret` — 예: 약한 패턴만 걸린 `notes.txt`)도 있다 — 이전 판의 “`secret` 은 여기까지 올 수 없다”는 틀린 문장이었다(리뷰 #6). 규칙(02 §10.1, 리뷰 #6): `sensitivity=secret` 이면 보호 등급과 무관하게 `archive`·`move` 불가(`blocked_reasons` = `secret_content`), 그룹 결정에서 제외. V3 가 이것을 `E_PROTECTED` `{"reason":"secret_content"}` 로 제외하고, 실행 F6 이 다시 확인한다. `trash` 는 항목 단위로 허용(비밀을 기기 밖으로 복사하지 않으므로). `sensitivity=patient` 의 `archive`·`move` 는 허용(02 §10.1).
 7. 볼륨 암호화(C14 — 제한하지 않고 경고만): `common/fsmeta.volume_encrypted(R) -> bool | None`(읽기 전용. 결정: `statfs` 의 볼륨에 대해 `getattrlist` 의 `VOL_CAP_FMT`/APFS 암호화 속성을 읽는 방법을 09 §12 에서 실기기 확인; 판정할 수 없으면 `None`). `False` 또는 `None` 이면 `plan.create` 봉투에 `W_ARCHIVE_UNENCRYPTED`(`details`: `{"archive_ops": N, "patient_count": M, "determinable": bool}`), `plan.show`·모든 승인 확인 화면에 “보관 폴더 볼륨이 암호화되어 있지 않습니다(또는 확인할 수 없음)” 한 줄. 같은 경고를 `config set archive.root` 와 `core.doctor` 도 낸다(02 §11). 차단하지 않는다.
 
 ### 4.5 볼륨 간 원본 해시 (`pre_sha256`)
@@ -269,7 +272,7 @@ manifest(root) = SHA-256( 정렬된 줄들 "\n" 로 연결 )
 
 1. **잠금 없이** 읽기: 계획 존재(`E_NOT_FOUND`), `state='draft'`(아니면 `E_INVALID_STATE`), 승인 행 없음(있으면 `E_INVALID_STATE`).
 2. 행들로 해시 재계산(§5). `!= plans.plan_hash` → `E_APPROVAL_MISMATCH` `{"reason":"plan_rows_changed"}`(DB 가 생성 후 바뀜 — 정상 경로에서는 불가능). `--hash` 가 64자 소문자 hex 가 아니면 `E_USAGE`, `!= plans.plan_hash` → `E_APPROVAL_MISMATCH`.
-3. 채널 검사: `--channel ∈ {mcp, schedule}` → `E_APPROVAL_DENIED` `{"reason":"channel_not_allowed"}`. (MCP 서버는 이 명령을 노출하지도 않는다 — 02 §10.3. 채널 검사는 2중 방어.)
+3. 채널 검사: 채널 `schedule` 은 여기까지 오지 않는다 — `api` 진입 시 스케줄 채널 허용 목록(`scan.run`, `review.summary` 둘뿐, 02 §7·§10.3-3)이 먼저 걸려 `E_PROTECTED` `{"reason":"channel_not_allowed"}`(02 §11). 실효 채널 `mcp` → `E_APPROVAL_DENIED` `{"reason":"channel_not_allowed"}`. (MCP 서버는 이 명령을 노출하지도 않는다 — 02 §10.3. 채널 검사는 2중 방어.)
 4. 수단 선택(§6.2)과 사람 확인. 확인 화면의 내용은 2단계에서 검증한 행에서 만든다.
 5. 확인 성공 후 잠금 획득 → 1·2단계를 **다시** 검사(기다리는 동안 cancel 이나 다른 승인이 있었을 수 있음) → 한 트랜잭션에서 `approvals`(plan_id, plan_hash, method, channel, request_id, approved_at) 삽입, `plans.state='approved'`, `plans.approval_id`, `audit_log` 행(§14). 
 6. 응답 `data`: `{"plan_id", "approval_id", "method", "approved_at"}`.
@@ -280,19 +283,22 @@ manifest(root) = SHA-256( 정렬된 줄들 "\n" 로 연결 )
 
 | 순서 | 조건 | 수단 |
 |---|---|---|
-| 1 | `DAYCLOSE_SANDBOX` 설정 **그리고** `DAYCLOSE_TEST_APPROVE=1` | `test` (확인 없이 승인) |
-| 2 | `DAYCLOSE_SANDBOX` 설정, `DAYCLOSE_TEST_APPROVE != 1` | 없음 → `E_APPROVAL_DENIED` `{"reason":"no_human_channel_in_sandbox"}`. 이유: 테스트 중 실제 대화상자가 뜨면 안 된다 |
+| 1 | **유효한 샌드박스**(§15.0 — `DAYCLOSE_SANDBOX` 설정만으로는 부족) **그리고** `DAYCLOSE_TEST_APPROVE=1` | `test` (확인 없이 승인) |
+| 2 | 유효한 샌드박스, `DAYCLOSE_TEST_APPROVE != 1` | 없음 → `E_APPROVAL_DENIED` `{"reason":"no_human_channel_in_sandbox"}`. 이유: 테스트 중 실제 대화상자가 뜨면 안 된다 |
+| 2a | `DAYCLOSE_SANDBOX` 가 설정됐지만 유효하지 않음 | 이 단계에 오지 않는다 — core 가 시작 시 `E_SANDBOX_VIOLATION` 으로 거부(§15.0). `DAYCLOSE_TEST_APPROVE` 는 어떤 경우에도 무시 |
 | 3 | 채널 `app` 이고 요청의 `app_signature` 가 등록된 앱 공개키로 검증됨(§6.5) | `app_button` |
-| 4 | `/dev/tty` 를 읽기·쓰기로 열 수 있고, 알려진 에이전트 환경 표식이 없음(§6.3) | `cli_tty` |
-| 5 | 그 외(TTY 없음, 에이전트 표식 있음, Skill 채널) | `native_dialog` |
+| 4 | **GUI 세션이 없음**(§6.3-0) **그리고** `/dev/tty` 를 읽기·쓰기로 열 수 있고, 알려진 에이전트 환경 표식이 없음 | `cli_tty` |
+| 5 | 그 외(GUI 세션 있음, TTY 없음, 에이전트 표식 있음, Skill 채널) | `native_dialog` |
 
-`method=test` 승인은 실행 시에도 같은 두 환경변수가 다시 있어야 유효하다(§7.1 G4).
+`method=test` 승인은 실행 시에도 유효한 샌드박스와 `DAYCLOSE_TEST_APPROVE=1` 이 다시 있어야 유효하다(§7.1 G4).
+결정(리뷰 #13·B3): `cli_tty` 는 **M5 부터** GUI 세션이 없는 경우(ssh 로만 접속한 Mac mini 등)에만 쓴다. 이유: pty 아래에서 표식 없이 도는 에이전트(예: Codex, 10 §8.7 확인 전)는 8자 프롬프트를 자기 출력으로 읽고 입력할 수 있다. GUI 가 있으면 사람은 대화상자를 쓸 수 있으므로 TTY 경로를 열어 둘 이유가 없다. M7 부터 `native_dialog` 가 LocalAuthentication 이 되면 `cli_tty` 는 **C12 의 문서화된 예외**(GUI 없는 세션에서만, Touch ID 불가)로 남는다.
 
 ### 6.3 `cli_tty`
 
+0. GUI 세션 판정: `common/fsmeta.has_gui_session()` — libSystem/Security 의 `SessionGetInfo(callerSecuritySession, …)` 로 얻은 속성에 `sessionHasGraphicAccess` 가 있으면 참(읽기 전용 호출, ctypes). 호출이 실패하면 **참으로 간주**(안전 쪽: 대화상자 경로로 보낸다 → GUI 가 정말 없으면 `no_gui` 로 거부되어 사람이 ssh 대신 화면 공유를 쓰게 됨). 09 §12 에 실기기 확인 항목 추가 요청.
 1. `/dev/tty` 를 직접 연다(표준입력이 아니다 — `yes | dayclose plan approve …` 같은 파이프 입력을 받지 않기 위함). 출력도 `/dev/tty` 로. `--json` 이면 stdout 에는 봉투만(02 §5.4).
 2. 에이전트 표식: 환경변수 중 알려진 코딩 에이전트 표식(예: `CLAUDECODE`)이 하나라도 있으면 이 수단을 쓰지 않고 `native_dialog` 로 넘어간다. 표식 목록은 `plan/approval.py` 의 상수(10 문서와 함께 유지). 결정: 표식이 있을 때 `cli_tty` 를 막는 이유 — 에이전트는 `script(1)` 같은 의사 터미널 도구로 TTY 를 만들고 화면의 8자를 그대로 입력할 수 있다. 표식은 우회 가능한 휴리스틱이지만, “에이전트가 문서대로 행동하면 사람 화면이 뜬다”를 보장한다.
-3. 요약 출력: 연산 종류별 개수·바이트, 볼륨 간 이동 개수, 만들 디렉터리 수, 환자 관련 파일 수(이름 없음), 처음 10개 연산의 `display_name → dst_display_path`, 제외 내역 수, `plan_hash` 앞 8자. `icloud_propagates=1` 연산이 있으면 **별도 줄**로 “N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다”(02 §10.3 7) — 이 줄은 요약 길이 제한으로 잘리지 않는 첫 부분에 둔다.
+3. 요약 출력: 연산 종류별 개수·바이트, 볼륨 간 이동 개수, 만들 디렉터리 수, 환자 관련 파일 수(이름 없음), 처음 10개 연산의 `display_name → dst_display_path`, 제외 내역 수, `plan_hash` 앞 8자. `icloud_propagates=1` 연산이 있으면 **별도 줄**로 “N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다”(02 §10.3 7) — 이 줄은 요약 길이 제한으로 잘리지 않는 첫 부분에 둔다. `DAYCLOSE_HOME` 이 기본값(`~/Library/Application Support/DayClose/`)이 아니면 **별도 줄**로 “다른 DayClose 데이터(<home 경로>)로 승인합니다 — 이 데이터의 보호 규칙만 적용됩니다”(리뷰 #19c: `--home` 으로 소유자의 보호 규칙이 없는 빈 DB 를 쓰는 경로를 사람이 알아보게). 같은 줄을 `native_dialog`·앱 승인 화면에도 넣는다(앱은 03 계약).
 4. 안내 “승인하려면 위의 8자를 입력하세요(취소: 엔터):”. 120초 안에 한 줄. 대소문자 무시로 `plan_hash[:8]` 와 같으면 확인 성공. 다르거나 빈 줄·EOF·시간 초과 → `E_APPROVAL_DENIED`.
 
 ### 6.4 `native_dialog`
@@ -320,8 +326,12 @@ manifest(root) = SHA-256( 정렬된 줄들 "\n" 로 연결 )
 문제: 같은 사용자 권한의 어떤 프로세스든 `dayclose serve --stdio --channel app` 을 띄워 `plan.approve` 를 보낼 수 있다. 부모 프로세스 경로·번들 ID 검사는 가짜 번들(`/tmp/X.app/Contents/MacOS/DayClose` + 위조 `Info.plist`)로 흉내 낼 수 있다. 결정(02 §10.3 ③): **`app_button` 은 Secure Enclave 서명 검증이 성공할 때만 성립하고, 부모 프로세스 검사는 어느 마일스톤에서도 쓰지 않는다**(약한 검사를 보장처럼 보이게 하지 않기 위함).
 
 1. **앱 키**: 앱이 `SecureEnclave.P256.Signing.PrivateKey` 를 만든다. 접근 제어 `SecAccessControlCreateWithFlags(…, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage, .userPresence])` — 서명할 때마다 Touch ID 또는 로그인 암호. 키는 기기 밖으로 나가지 않으므로 두 Mac(02 §8.1)은 각자 키를 갖는다.
-2. **등록**: `core.app_key`(CLI `dayclose app-key register|show|revoke`, 02 §5.3, MCP 비노출). 앱이 공개키(SPKI DER)를 보내면 core 는 SPKI SHA-256 앞 8자를 `native_dialog`(§6.4) 또는 `cli_tty`(§6.3) 로 보여 주고, 사람이 앱 화면의 같은 8자와 대조해 승인하면 `app_meta` 의 `approval.app_pubkey_spki_b64`, `approval.app_pubkey_registered_at` 에 저장(06 §5.1 키 목록), `audit_log` 기록. `revoke` 도 사람 확인. 교체 = revoke 후 register. `show` 는 지문·등록 시각만.
-3. **승인 요청**: 앱은 [승인하고 실행] 클릭 시 `plan.show` 로 해시를 다시 확인하고
+2. **등록**: `core.app_key`(CLI `dayclose app-key register|show|revoke`, 02 §5.3, MCP 비노출).
+   - `register` 는 **실효 채널 `app`** 에서만 받는다(리뷰 #4). `cli`·`skill`(승격 포함)·`mcp`·`schedule`·`test` 는 `E_PROTECTED` `{"reason":"owner_only"}`. 이유: core 는 Secure Enclave 키와 소프트웨어 P-256 키를 구별할 수 없으므로, 에이전트가 자기 키를 등록하고 사람이 대화상자를 한 번 누르면 이후 모든 `app_button` 이 위조된다. 앱 경로로만 받으면 등록에도 앱 UI 동작이 필요하다(완전한 보장은 아님 — §19.3).
+   - 앱이 공개키(SPKI DER)를 보내면 core 는 SPKI SHA-256 앞 8자를 `native_dialog`(§6.4) 로 보여 준다. 대화상자 문구: “DayClose 앱 설정에서 **방금 [승인 키 만들기]를 누른 경우에만** 승인하세요. 누르지 않았다면 취소하세요. 키 지문: ab12cd34”. 사람이 승인하면 `app_meta` 의 `approval.app_pubkey_spki_b64`, `approval.app_pubkey_registered_at` 에 저장(06 §5.1), `audit_log` 기록.
+   - `revoke` 도 사람 확인(대화상자 또는 GUI 없는 세션의 `cli_tty`), 채널 제한 없음(약화가 아니라 강화 방향 — 키를 지우면 서명 승인이 꺼지고 대화상자로 돌아갈 뿐). 교체 = revoke 후 register. `show` 는 지문·등록 시각만(읽기).
+   - **기동 시 대조**: 앱은 실행할 때마다 `app-key show` 의 지문과 자기 Secure Enclave 공개키의 지문을 비교한다. 다르거나(남의 키가 등록됨) 등록돼 있는데 앱에 키가 없으면 경고 화면 + [키 폐기] 를 보인다(03·09). 앱에 키가 있는데 등록이 없으면 [승인 키 등록] 안내.
+3. **승인 요청**: 앱은 [승인하고 실행] 클릭 시 `plan.show` 로 연산 목록을 다시 받고, **화면에 표시한 연산들로 §5.1 의 정규 객체를 직접 다시 만들어 SHA-256 을 계산**해 core 가 준 `plan_hash` 와 비교한다(리뷰 B2 — `DayCloseKit` 의 정규화 구현, `contracts/fixtures` 의 해시 픽스처로 Python 과 교차 검증). 다르면 서명하지 않고 오류 화면. 같을 때만
    `msg = b"dayclose.approve.v1\n" + device_id + b"\n" + plan_id + b"\n" + plan_hash` (각 값 UTF-8, `plan_id` 는 `pln_7` 같은 외부 ID)
    를 Secure Enclave 로 ECDSA P-256/SHA-256 서명(여기서 Touch ID/암호 프롬프트)해, stdio 요청 인자 `app_signature`(DER 서명의 base64)로 보낸다.
 4. **core 검증**: 등록 공개키가 있고 `cryptography` `ec.ECDSA(hashes.SHA256())` 검증 성공 → `method=app_button`. 키 미등록·서명 없음·검증 실패 → 거부하지 않고 §6.2 의 다음 순서로(채널 `app` 이면 대개 `native_dialog`). 이유: 앱 키 문제로 승인이 영영 막히지 않게 하되, 넘어간 수단도 사람 확인이다.
@@ -332,10 +342,11 @@ manifest(root) = SHA-256( 정렬된 줄들 "\n" 로 연결 )
 | 시점 | core | 앱 | 실제 사람 확인 |
 |---|---|---|---|
 | M5~M6, 그 Mac 의 V11(09 §12) 미확인 | 서명 검증·`core.app_key` 구현됨(12 M5) | 서명 없이 보냄 | 앱 버튼 → core 가 **`native_dialog`(osascript)** 를 띄움. 화면 제어 도구로 누를 수 있음(§6.8) |
-| M5~M6, V11 통과 | 같음 | 키 등록 후 서명해 보냄 | Touch ID/암호 — 앱 경로에서 실제로 강제 |
-| M7 이후(“승인 강화”, 12 M7, PRD C12) | `native_dialog` 의 구현을 `dayclose-native confirm`(LocalAuthentication `.deviceOwnerAuthentication`)으로 교체, osascript 는 `dayclose-native` 가 없을 때의 대체 수단 | V11 통과 기기에서 서명 | 대화상자 경로도 Touch ID/암호. `cli_tty` 는 그대로(ssh 의 사람 입력 경로) |
+| M5~M6, V11 통과 | 같음 | **M5 부터** 키 등록 후 서명해 보냄(리뷰 #13 — 이 표가 기준, 03 §4.6·12 M7 이 따름) | Touch ID/암호 — 앱 경로에서 실제로 강제 |
+| M7 이후, V11 통과 Mac(“승인 강화”, 12 M7, PRD C12) | `native_dialog` 의 구현 = `dayclose-native confirm`. confirm 은 Touch ID/암호 후 **앱 승인과 같은 `msg` 에 대한 Secure Enclave 서명**을 돌려주고, core 는 `core.app_key` 공개키로 같은 검증기로 검증(리뷰 #2). stdout 의 `{"ok": true}` 같은 값으로 성공을 판정하지 않는다. 헬퍼 실행 파일은 **앱 번들 안의 고정 경로에서만**(`<DayClose.app>/Contents/Helpers/dayclose-native`, 번들 위치 해석은 09 §2) — 승인 경로에서는 `DAYCLOSE_NATIVE` 와 `~/.local/bin` 을 무시. 헬퍼가 없거나 서명 검증 실패 → **`E_APPROVAL_DENIED` `{"reason":"confirm_unverified"}`, osascript 로 내려가지 않는다**(내려가면 헬퍼를 지우는 것만으로 위조 가능한 경로가 되살아남) | 서명 | 앱·대화상자 모두 Touch ID/암호(C12, 승인마다). `cli_tty` 는 GUI 없는 세션에서만 남는 **C12 의 문서화된 예외** |
+| M7 이후, V11 실패 Mac | 서명할 키가 없으므로 `native_dialog` 는 osascript 그대로(§6.4) — 남은 위험(§19.3) | 서명 없음 | 대화상자(화면 제어로 누를 수 있음) |
 
-M7 이전에도 이후에도 `approval_method` 값은 같다(06: `app_button`, `cli_tty`, `native_dialog`, `test`). M7 은 `native_dialog` 의 **구현**만 바꾼다.
+M7 이전에도 이후에도 `approval_method` 값은 같다(06: `app_button`, `cli_tty`, `native_dialog`, `test`). M7 은 `native_dialog` 의 **구현**만 바꾼다. confirm 헬퍼가 앱과 같은 Secure Enclave 키에 접근할 수 있는지(같은 서명 인증서·키체인 접근 그룹)는 09 §12 V11 의 확인 범위에 포함해야 한다.
 
 테스트: 서명 없는 app 채널 approve → `app_button` 기록 0(샌드박스에서는 §6.2 ②로 `E_APPROVAL_DENIED`), 다른 키의 서명·다른 `plan_hash`·다른 `device_id` 에 대한 서명 → 검증 실패.
 
@@ -351,16 +362,18 @@ M7 이전에도 이후에도 `approval_method` 값은 같다(06: `app_button`, `
 2. CLI 승인은 `/dev/tty` 직접 입력 또는 사용자 화면의 대화상자를 요구한다. 표준입력 파이프는 무시된다. 에이전트 표식이 있으면 TTY 수단 자체를 쓰지 않는다.
 3. `app_button` 은 등록된 Secure Enclave 키의 서명(서명마다 Touch ID/암호)이 있어야 성립한다(§6.5). `serve --stdio --channel app` 을 직접 띄워도 서명을 만들 수 없고, 서명이 없으면 대화상자로 넘어간다.
 4. 대화상자 도구는 절대경로·root 소유·고정 환경으로만 실행한다(§6.4). `PATH` 앞의 가짜 `osascript` 는 실행되지 않는다.
-5. `test` 수단은 샌드박스 + 명시 환경변수에서만, 그리고 실행 시 다시 검사된다. 샌드박스에서는 실제 대화상자도 뜨지 않는다.
+5. `test` 수단은 **유효한 샌드박스**(§15.0) + `DAYCLOSE_TEST_APPROVE=1` 에서만, 그리고 실행 시 다시 검사된다. 샌드박스에서는 실제 대화상자도 뜨지 않는다.
 6. 승인은 특정 `plan_id` + 전체 `plan_hash` 에 묶이고, **`plan.apply` 는 매번(재개 포함) 저장된 연산 행으로 해시를 다시 계산해 `approvals.plan_hash` 와 비교**한다(§7.1 G4). 승인 후 `plan_operations` 를 DB 에서 직접 고치면 실행이 거부된다.
 7. 감사 교차 검사: `approvals.request_id` 와 같은 `request_id` 의 `audit_log` 행이 있어야 한다(§7.1 G5). `sqlite3` 로 승인 행만 넣은 경우가 걸린다.
+7a. 보호 약화 명령은 실효 채널 `skill`/`mcp` 에서 core 가 `E_PROTECTED` `{"reason":"owner_only"}` 로 거부한다(리뷰 #19a, 02·10 소관 — `config set` 의 `protection.*`·`vault.*`·`scan.exclude_globs`·`icloud.*`·`ai.allow_external`, `rule remove`, `suppression add/remove`, `root add/remove/set`, `policy accept/reject`, `core.init`). 08 의 관점에서 중요한 이유: 에이전트가 승인을 얻지 못해도 보호 규칙을 먼저 풀면 다음 승인에서 사람이 보는 계획이 “보호된 것이 빠진” 것처럼 보이지 않기 때문. 또 `keep_always` 는 에이전트 채널에서 `keep` + `W_OWNER_ONLY_DOWNGRADED` 로 기록된다(리뷰 #19b — suppression 생성 불가). `core.app_key register` 는 채널 `app` 만(§6.5-2).
+7b. 샌드박스는 §15.0 의 유효성 검사를 통과해야만 `test` 승인을 허용한다(`DAYCLOSE_SANDBOX=$HOME` 같은 설정은 시작 시 거부).
 8. 승인 유효 기간 24시간(§7.1 G6).
 9. 범위 밖(§0): DB 행·감사 행·해시를 함께 위조하는 적대적 프로세스, 그리고 화면 제어(§6.8).
 
 ### 6.7 무인 기기(Mac mini)에서의 승인
 
 - 예약 실행기는 승인도 실행도 하지 않는다(§6.1 3단계, §7.1 G10). 무인 기기에서 계획은 만들어질 수 있지만(Skill/CLI) 사람이 승인할 때까지 `draft` 로 남는다.
-- 허용되는 사람 경로: (a) 화면 공유로 그 Mac 에 들어가 앱 버튼 또는 대화상자, (b) **ssh 세션의 `cli_tty`** — ssh 는 `/dev/tty` 를 주고 에이전트 표식이 없으면 §6.3 이 동작한다(사람이 8자를 직접 친다). GUI 로그인 세션이 없으면 `native_dialog` 는 `no_gui` 로 거부된다.
+- 허용되는 사람 경로: (a) 화면 공유로 그 Mac 에 들어가 앱 버튼 또는 대화상자, (b) **GUI 세션이 없는 ssh 세션의 `cli_tty`** — ssh 는 `/dev/tty` 를 주고, GUI 세션이 없고 에이전트 표식이 없으면 §6.3 이 동작한다(사람이 8자를 직접 친다). 콘솔에 사용자가 로그인해 GUI 세션이 있는 Mac 에 ssh 로 들어간 경우에도 ssh 프로세스의 보안 세션에는 그래픽 접근이 없으므로 `cli_tty` 다(§6.3-0 판정은 호출 프로세스의 세션 기준). GUI 로그인 세션이 없으면 `native_dialog` 는 `no_gui` 로 거부된다.
 - 다른 기기(MacBook)에서 Mac mini 의 계획을 승인하는 경로는 만들지 않는다. 이유: 기기 간 통신·동기화가 비목표(02 §8.1)이고, 승인 서명은 `device_id` 에 묶인다.
 - `draft` 계획은 만료가 없지만 결정 이후 바뀐 파일은 apply 사전조건에서 걸러진다. 오래된 `draft` 를 `review.summary` 가 “승인 대기 계획 N개”로 보여 주도록 03/10 에 요청.
 
@@ -384,14 +397,14 @@ M7 이전에도 이후에도 `approval_method` 값은 같다(06: `app_button`, `
 | G1 | 잠금 획득 | `E_LOCKED` |
 | G2 | `running` 연산이 어느 계획에든 있음 | `E_INVALID_STATE` `{"reason":"recover_required"}` |
 | G3 | 계획 상태: `approved` 이거나, `executing` 이고 `running` 0개(재개, §7.7) | `draft` → `E_APPROVAL_REQUIRED`; 종결 상태 → `E_INVALID_STATE` |
-| G4 | 승인 행 존재, `approvals.plan_hash == plans.plan_hash == 재계산 해시`. 재계산은 **매 호출마다**(재개 포함) `plan_operations` 의 저장된 행에서 §5 로 하며 캐시하지 않는다 — 승인 후 DB 에서 연산 행을 직접 고친 경우를 잡는 유일한 장치. `method='test'` 면 지금 `DAYCLOSE_SANDBOX` 와 `DAYCLOSE_TEST_APPROVE=1` | 없음 → `E_APPROVAL_REQUIRED`; 해시 불일치 → `E_APPROVAL_MISMATCH`; test 조건 불충족 → `E_APPROVAL_REQUIRED` |
+| G4 | 승인 행 존재, `approvals.plan_hash == plans.plan_hash == 재계산 해시`. 재계산은 **매 호출마다**(재개 포함) `plan_operations` 의 저장된 행에서 §5 로 하며 캐시하지 않는다 — 승인 후 DB 에서 연산 행을 직접 고친 경우를 잡는 유일한 장치. `method='test'` 면 지금 **유효한 샌드박스**(§15.0 `sandbox_status()`)와 `DAYCLOSE_TEST_APPROVE=1` | 없음 → `E_APPROVAL_REQUIRED`; 해시 불일치 → `E_APPROVAL_MISMATCH`; test 조건 불충족 → `E_APPROVAL_REQUIRED` |
 | G5 | `audit_log` 에 `request_id = approvals.request_id`, `command='plan.approve'`, `ok=1` 행이 있음 | `E_APPROVAL_REQUIRED` `{"reason":"approval_not_audited"}` |
 | G6 | `now - approvals.approved_at ≤ 24h` | `E_APPROVAL_REQUIRED` `{"reason":"approval_expired"}` — 결정: 24시간. 재개(`executing`)에도 같은 기한 |
 | G7 | 모든 연산의 `src_path`, `dst_path`, `create_dirs_json` 원소, 휴지통 디렉터리가 §15.1 의 `_guard` 를 통과 | `E_SANDBOX_VIOLATION`(테스트) / `E_PATH_OUTSIDE_ROOTS`(운영) |
 | G8 | 연산들이 쓰는 모든 볼륨(원본 볼륨, 목적지 볼륨)이 지금 도달 가능(프로브)하고 네트워크 아님 | `E_VOLUME_TIMEOUT` / `E_VOLUME_UNAVAILABLE` — FR-AB-001 AC(외장 분리 상태 apply → `E_VOLUME_UNAVAILABLE`, 원본 보존) |
 | G9 | `archive` 연산이 있으면: `config.archive.root` 가 설정되어 있고 그 연산들의 `dst_path` 가 지금의 `archive.root` 아래 | `E_ARCHIVE_TARGET_MISSING` |
 | G9a | `icloud_propagates=1` 연산이 있는데 `approvals.icloud_ack=0` | `E_APPROVAL_REQUIRED` `{"reason":"icloud_ack_missing"}` |
-| G10 | 채널 `schedule` | `E_APPROVAL_DENIED` `{"reason":"channel_not_allowed"}` — 결정: 예약 실행기는 실행하지 않는다 |
+| G10 | 채널 `schedule` | 이 검사 전에 `api` 진입의 스케줄 채널 허용 목록(`scan.run`, `review.summary` 뿐 — 02 §7·§10.3-3)이 `E_PROTECTED` `{"reason":"channel_not_allowed"}` 로 거부한다. G10 은 그 계약의 2중 확인(executor 가 직접 불렸을 때 같은 코드) |
 
 통과하면 `plans.state='executing'`, `started_at`(재개면 유지) 커밋.
 
@@ -419,9 +432,11 @@ F9 를 같은 볼륨 이름변경에는 적용하지 않는 이유: 이름변경
 원본 `kind ∈ {dir, package}` 인 모든 연산(같은 볼륨 휴지통 포함)에 대해, 원본 트리를 `os.scandir` 로 걷는다(심볼릭 링크 따라가지 않음, 최대 100,000 엔트리, 깊이 64). 다음 중 하나라도 있으면 `E_PROTECTED`:
 - 이름 `.git` 인 엔트리(저장소를 통째로 버리는 것 방지) — `details.reason="contains_repo"`
 - 경로가 활성 `vault_assets.path`(`status <> 'missing'`) 중 하나를 접두사로 포함 — `"contains_security_asset"`
-- 05 §3 의 **이름·확장자 신호**(내용은 읽지 않음 — `vault` 의 순수 함수 `vault.signals.name_matches(name, rel_path)`, api 가 주입) — `"contains_secret_candidate"`
+- 05 §3 의 **이름·확장자 신호**(내용은 읽지 않음 — `vault/signals.py: name_matches(path)` — 파일 I/O 없는 순수 함수, api 가 주입) — `"contains_secret_candidate"`
 - `config.protection.patient_filename_patterns` 일치(07) — `"contains_patient_candidate"`
 - `SF_DATALESS` 엔트리 — `"contains_dataless"`
+- **켜진 `protection_rules` 행이 트리 안 경로에 일치**(리뷰 #3) — `"contains_protected_rule"`. 규칙 종류별: `path_prefix` = 규칙 접두사(`~` 확장, `realpath`)가 원본 디렉터리와 같거나 그 아래; `glob` = 걷는 엔트리 중 하나의 절대경로가 글롭에 일치; `extension` = 걷는 일반 파일 중 하나의 확장자가 일치; `project` = 그 프로젝트의 `root_path` 가 원본 디렉터리 아래. 보호 등급과 무관하게(`user_rule`, `patient_data`, `active_repo`, `system`, `security_asset` 모두) 하나라도 일치하면 거부. 규칙 목록은 api 가 주입(§7.9 — executor 는 `policy` 를 import 하지 않음).
+- `move`/`archive` 연산이면: DB 에서 원본 디렉터리 아래 경로의 `file_entries` 중 `sensitivity='secret'`(05 §8.2 — 자산이 아닌 비밀 포함 파일)인 것이 하나라도 있으면 — `"contains_secret_content"`(리뷰 #6 의 이웃 경로: 파일 단위로 막은 `move`/`archive` 가 상위 폴더 연산으로 다시 열리지 않게). `trash` 에는 적용하지 않는다(파일 단위로도 trash 는 허용).
 - 한도 초과 — `"unverifiable"`(결정: 다 보지 못한 트리는 보호된 것으로 본다)
 
 결정: 이 검사는 DB 가 아니라 **지금의 파일 시스템**을 본다. 이유: 디렉터리 mtime 은 직계 자식 변화만 반영하므로, 계획 후 깊은 곳에 생긴 키 파일은 F3 으로 잡히지 않는다.
@@ -590,6 +605,7 @@ F9 를 같은 볼륨 이름변경에는 적용하지 않는 이유: 이름변경
 |---|---|
 | 심볼릭 링크(항목 `kind='symlink'` — 04 는 링크에 항목을 만들지 않지만 디렉터리 안에는 있음) | 링크 자체를 옮긴다. 어떤 단계도 링크를 따라가지 않는다(`O_NOFOLLOW`, `follow_symlinks=False`, `readlink`). 상대 링크는 이동 후 깨질 수 있다 — 볼륨 간 디렉터리 이동의 승인 요약에 “심볼릭 링크 N개 포함” 표시 |
 | 하드 링크(`st_nlink > 1`) | 같은 볼륨 이름변경·휴지통: 그 경로만 옮겨지고 다른 링크는 남는다 → 공간이 확보되지 않음. `plan.show` 에 `details.hardlinked=true`. 볼륨 간: 내용만 복사, 원본 경로 제거 후에도 다른 링크가 데이터를 유지 — 유실 없음 |
+| 보호된 객체의 다른 하드 링크 | 보호는 경로가 아니라 객체에 붙는다: 원본 `st_nlink > 1` 이면 같은 `(dev, inode)` 를 가진 다른 `file_entries` 중 하나라도 보안 자산·`sensitivity ∈ {secret, patient}`·보호 규칙 일치면 그 보호를 이 연산에도 적용한다(V3·F6 에서 `ix_file_entries_identity` 조회). 이유: 평범한 이름의 하드 링크(`~/Downloads/photo.jpg` → `id_rsa` 와 같은 inode)를 `archive` 하면 키 내용이 외장으로 복사된다. 결과 `E_PROTECTED` `{"reason":"hardlink_to_protected"}`. 루트 밖에 있는 다른 링크는 알 수 없다(남은 위험) |
 | 패키지·번들 | 디렉터리와 같이 처리(F7 내부 검사 포함). 실행 중인 앱 번들은 `system` 보호라 계획에 올 수 없다(02 §10.1) |
 | 다른 앱이 연 파일 | 같은 볼륨: 허용(§7.2 F9 설명). 볼륨 간: `in_use` 로 건너뜀. 디렉터리 안 파일의 열림은 검사하지 않는다(libproc 경로 검사는 디렉터리 하위를 포함하지 않음 — §19 남은 위험) |
 | 쓰는 중인 파일 | F4(60초 settle) + 복사 전후 동일성 비교 |
@@ -612,7 +628,7 @@ F9 를 같은 볼륨 이름변경에는 적용하지 않는 이유: 이름변경
 3. **업로드 완료 판정**: 아직 업로드되지 않은(다른 기기에 없는) 파일을 휴지통에 넣으면 그 파일은 이 Mac 의 휴지통에만 남는다 — 그 자체로 유실은 아니지만 “다른 기기에서 삭제” 문구가 틀려진다. 메타데이터만으로(내용을 읽지 않고) 업로드 완료를 알 수 있는 방법(예: `dayclose-native` 의 `URLResourceValues.ubiquitousItemIsUploaded`)을 확인하고, 확인 가능하면 F5 에 “업로드 미완료 → `skipped` `E_STALE` `{"reason":"icloud_upload_pending"}`(retryable)”를 추가한다. 방법이 없으면 그 사실을 기록하고 승인 문구를 “다른 기기에서도 삭제될 수 있습니다”로 바꾼 뒤에만 켠다.
 4. **장애 주입**: iCloud 모의 시나리오(루트 `icloud_synced` 전환, 실행 직전 dataless 전환, `icloud_ack=0`)를 11 의 스위트에 추가하고 녹색.
 
-**결과**: 네 조건이 두 Mac 모두에서 통과하고 09 §12 에 기록되면 `TRASH_UNLOCK_VERIFIED = True` 로 바꾸는 리뷰된 변경 하나가 들어간다(M5 종료 기준, 12). 그 뒤 해제 = `TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`(기본 `true`). 해제되는 것은 **다운로드된 iCloud 동기화 파일의 항목 단위 `trash` 하나뿐**이다. dataless 파일은 해제 여부와 무관하게 모든 연산이 계속 차단된다. 그룹 결정(`decision.set --group`)과 학습 규칙 결정(`actor='rule'`)은 iCloud 동기화 항목을 `trash` 에 넣지 않는다(02 §10.1 예외 2 — `plan.create` V3 도 `decisions.actor='user' AND scope='item'` 을 다시 확인하고, 아니면 `E_PROTECTED` `icloud_synced` 로 제외).
+**결과**: 네 조건이 두 Mac 모두에서 통과하고 09 §12 에 기록되면 `TRASH_UNLOCK_VERIFIED = True` 로 바꾸는 리뷰된 변경 하나가 들어간다(M5 종료 기준, 12). 그 뒤 해제 = `TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`(기본 `true`). 해제되는 것은 **다운로드된 iCloud 동기화 파일의 항목 단위 `trash` 하나뿐**이다. dataless 파일은 해제 여부와 무관하게 모든 연산이 계속 차단된다. 그룹 결정(`decision.set --group`)과 학습 규칙 결정(`actor='rule'`)은 iCloud 동기화 항목을 `trash` 에 넣지 않는다(02 §10.1 예외 2 — `plan.create` V3 도 `decisions.actor='user' AND scope='item' AND channel IN ('cli','app')` 을 다시 확인하고, 아니면 `E_PROTECTED` `icloud_synced` 로 제외). `decisions.actor` 는 `user`/`rule` 두 값뿐이라 Skill·MCP 에서 온 결정도 `user` 다 — 채널 조건이 에이전트 결정을 거르는 유일한 장치(리뷰 #5). 같은 조건을 `decision.set` 이 기록 시점에 이미 강제한다(10·07).
 게이트 상수는 `policy/icloud.py` 한 곳에 있고, 테스트 `test_icloud_gate_requires_verification_record` 가 상수가 `True` 이면 `docs/09-MACOS-INTEGRATION.md` §12 의 해당 검증 행이 두 기기 모두 `ok` 로 채워져 있는지 확인한다(검증 없이 상수만 바꾸는 변경을 CI 가 막음).
 
 **결정: 다운로드된 iCloud 파일의 `move`/`archive`/`rename` 은 v1 에서 열지 않는다.** 이유: (a) iCloud 밖으로의 이동은 다른 기기에서 삭제로 보이는데 “이동”이라는 이름이 그 사실을 가린다, (b) 볼륨 간 `archive` 는 원본 제거가 곧 iCloud 삭제 전파라 휴지통과 달리 iCloud 의 “최근 삭제된 항목” 보존도 없다, (c) `rename` 은 다른 기기에서 충돌 사본을 만들 수 있다. 열려면 PRD 의 새 소유자 결정과 02 §10.1 예외 2 표 변경이 먼저다 — §9.1 의 검증으로는 열리지 않는다.
@@ -705,7 +721,9 @@ F9 를 같은 볼륨 이름변경에는 적용하지 않는 이유: 이름변경
 - `running` 연산 있음 → `E_INVALID_STATE` `recover_required`.
 - `--op` 가 이 계획의 연산이 아니면 `E_NOT_FOUND`. 지정한 연산이 `done` 이 아니거나 `undo_state ∉ {undoable, undo_failed}` 면 그 연산은 결과에 `not_applicable` 로 보고(오류 아님).
 - 대상 = 지정 연산(없으면 전부)을 `seq` **역순**으로.
-- 전역 검사: G7(`_guard`), G8(볼륨 도달 — 원래 경로 볼륨과 현재 위치 볼륨).
+- 전역 검사: G0(기기, §7.11), G7(`_guard`), G8(볼륨 도달 — 원래 경로 볼륨과 현재 위치 볼륨).
+- **보호 재평가**(리뷰 #15): 연산마다 1단계 직전에 api 가 주입한 콜백으로 **현재 위치 `C`** 를 평가한다. (a) `C` 가 활성 git 저장소 안이고 git 추적 중(05 §9.3 과 같은 `ls-files --error-unmatch` 판정 — `GIT_OPTIONAL_LOCKS=0`) 이거나, (b) `C` 의 엔트리가 지금 vault 자산(05 §8.2 의 보호 술어 — `retired` 포함)이거나, (c) `C` 가 dataless 이거나 `C` 가 지금 iCloud 동기화 경로(§9.2 실시간 신호 포함 — 이동 후 그 루트의 동기화가 켜진 경우)에 있으면 → `undo_failed`, `E_PROTECTED` `{"reason":"repo_tracked"|"security_asset"|"dataless"|"icloud_synced"}`(마지막: 되돌리기가 그 파일을 iCloud 밖으로 옮겨 다른 기기에서 삭제를 일으키므로). 이유: undo 는 승인 없이 실행되므로, 이동 후 사용자가 저장소에 커밋한 파일이나 키로 바뀐 파일을 엔진이 빼내면 안 된다. 사용자가 원하면 Finder/git 으로 직접 옮긴다.
+- 원래 위치 `O` 쪽은 재평가하지 않는다(되돌리기는 원래 있던 곳으로의 복귀). 단 `O` 가 iCloud 동기화 경로이고 연산이 `icloud_propagates=0` 으로 실행됐던 경우(그 사이 루트 동기화가 켜짐)는 되돌리기가 다른 기기에 새 파일을 만들 뿐 삭제를 일으키지 않으므로 허용.
 
 ### 11.2 연산별 절차
 
@@ -792,13 +810,26 @@ F9 를 같은 볼륨 이름변경에는 적용하지 않는 이유: 이름변경
 
 ## 15. 테스트 샌드박스 가드와 정적 검사
 
+### 15.0 샌드박스 유효성 (리뷰 #1 — 02 §10.4 계약, 판정 함수 `common/paths.sandbox_status()` → `valid` / `invalid(reason)` / `off`. 샌드박스 환경변수를 읽는 유일한 함수 — executor·plan 은 이 결과만 본다)
+
+`DAYCLOSE_SANDBOX` 가 설정되면 core 는 **모든 명령의 시작 시**(전송 계층이 봉투를 만들기 전) 다음을 **전부** 확인한다. 하나라도 거짓이면 그 명령은 `E_SANDBOX_VIOLATION` 으로 끝나고 아무것도 읽거나 쓰지 않는다.
+
+1. `S = realpath(DAYCLOSE_SANDBOX)` 가 사용자 임시 디렉터리(`os.confstr("CS_DARWIN_USER_TEMP_DIR")` 의 `realpath`) 아래이거나 `/private/tmp` 아래.
+2. `S` 가 다음 중 어느 것과도 같지 않고 그 조상도 아님: 실제 홈 `realpath(pwd.getpwuid(os.getuid()).pw_dir)`(**`$HOME` 이 아님** — 환경변수는 바꿀 수 있다), `/Volumes`, 기본 `DAYCLOSE_HOME`(`<실제 홈>/Library/Application Support/DayClose`).
+3. `S/.dayclose-sandbox` 표식 파일이 일반 파일로 존재(테스트 픽스처가 만든다. 내용은 보지 않는다).
+4. `realpath(DAYCLOSE_HOME)` 이 `S` 아래(02 §10.4 의 기존 조건).
+
+유효할 때만 샌드박스 전용 변수(`DAYCLOSE_TEST_APPROVE`, `DAYCLOSE_TEST_NOW`, `DAYCLOSE_TEST_FAULT`)가 효력을 갖는다. 승인 수단 ①(§6.2)과 실행 G4 는 `sandbox_status()` 의 결과를 다시 부른다(환경변수 존재만 보지 않는다). 테스트: 거부 사례마다 1개 — `S=$HOME`, `S=/`, `S=/Volumes`, `S` 가 홈의 조상(`/Users`), `S` = 기본 `DAYCLOSE_HOME`, 표식 없음, `$HOME` 을 임시 디렉터리로 바꾼 채 `S=<실제 홈>`, `S` 가 실제 홈을 가리키는 심볼릭 링크.
+
+남는 경계(설계상 허용): 유효한 샌드박스 안에서의 `test` 승인은 사람 없이 성립하지만, `_guard`(§15.1) 3단계가 모든 파일 연산을 `S` 안으로 가둔다. 실제 파일에 대한 하드 링크를 `S` 안에 만든 뒤 휴지통·이동해도 그 링크 이름만 옮겨질 뿐 원래 경로의 파일은 남는다(내용을 바꾸는 연산은 없음). 실제 파일을 `S` 안으로 옮기는 것은 DayClose 밖의 행동이다.
+
 ### 15.1 `_guard` (런타임, `fsops` 내부)
 
 ```
 _guard(*paths):
   1. 각 p 는 절대경로, NUL 없음, 구성요소에 '..' 없음. 아니면 E_USAGE 성격의 내부 오류 → E_INTERNAL
-  2. 테스트 감지: 환경에 PYTEST_CURRENT_TEST 가 있거나 'pytest' 가 sys.modules 에 있으면 → DAYCLOSE_SANDBOX 가 반드시 설정되어 있어야 함. 없으면 E_SANDBOX_VIOLATION
-  3. DAYCLOSE_SANDBOX 설정 시: q = realpath(가장 가까운 존재하는 조상) + 나머지 구성요소.
+  2. 테스트 감지: 환경에 PYTEST_CURRENT_TEST 가 있거나 'pytest' 가 sys.modules 에 있으면 → 유효한 샌드박스(§15.0)여야 함. 아니면 E_SANDBOX_VIOLATION
+  3. DAYCLOSE_SANDBOX 설정 시(이미 §15.0 으로 유효성 확인됨 — 여기서 sandbox_status() 를 다시 부른다): q = realpath(가장 가까운 존재하는 조상) + 나머지 구성요소.
      os.path.commonpath([q, realpath(SANDBOX)]) != realpath(SANDBOX) → E_SANDBOX_VIOLATION
   4. 운영 모드: §3.5 허용 영역(홈 또는 /Volumes/<이름>) 밖 → E_PATH_OUTSIDE_ROOTS. 금지 영역(§3.5 목록, DAYCLOSE_HOME) → E_PATH_OUTSIDE_ROOTS
 ```
@@ -823,6 +854,29 @@ _guard(*paths):
 6. **Swift**: `app/`, `native/` 소스에서 `removeItem`, `moveItem`, `trashItem`, `replaceItem`, `copyItem`, `createFile`, `rename(`, `unlink(`, `recycle` 등장 0(앱 캐시 디렉터리 쓰기는 03/09 가 허용 목록을 정함). 11 문서가 구현.
 
 ---
+
+### 15.3 장애 주입 체크포인트 (11 이 쓰는 이름 — 이 표가 정의)
+
+`executor/_checkpoint(name)` 은 유효한 샌드박스(§15.0)에서만 동작하고 그 밖에서는 아무것도 하지 않는다(호출 비용만). 환경 `DAYCLOSE_TEST_FAULT=<name>:<n>[:<action>]` — 그 이름의 `n` 번째 도달 시 `action`(기본 `exit`) 실행. `action ∈ {exit, enospc, eio, eperm, exdev}`: `exit` = `os._exit(137)`(정리 코드 미실행, SIGKILL 과 같은 효과), 나머지 = 다음 파일 시스템 호출이 그 errno 의 `OSError` 를 던지게 함. 11 의 제안 이름을 채택하고 아래를 더한다.
+
+| 이름 | 위치(이 문서의 단계) | 그 순간의 불변식(복구 기대) |
+|---|---|---|
+| `op.running_committed` | §7.3 4단계 커밋 직후, 파일 시스템 호출 전 | 원본 그대로 → recover: `pending` |
+| `op.dirs_created` | §7.4.6 `create_dirs` 생성 후, 4단계 전 | 디렉터리만 생김(지우지 않음, §11.5), op `pending` |
+| `op.fs_done` | 같은 볼륨 `renameatx_np` 성공 직후, 디렉터리 fsync·`done` 커밋 전 | recover: `absent/match → done` |
+| `xdev.copy_partial` | §7.4.3 3단계, 첫 청크를 `tmp` 에 쓴 직후 | recover: T 제거 → `pending` |
+| `xdev.tmp_synced` | 3단계 끝 `F_FULLFSYNC` 후, 4단계 검증 전 | 위와 같음 |
+| `xdev.verified` | 6단계 `tmp → dst` 확정 이름변경 후, 7단계 원본 제거 전 | recover: 되감기(D 제거) → `pending` |
+| `xdev.tombstoned` | 디렉터리 7단계, `src → tomb` 이름변경 직후 | recover: D 매니페스트 확인 후 B 제거 → `done` |
+| `xdev.src_removed` | 7단계 원본 제거 후, `done` 커밋 전 | recover: `done` |
+| `undo.undoing_committed` | §11.2 3단계 `undoing` 커밋 후, 파일 호출 전 | recover §10.5: `undoable` |
+| `undo.fs_done` | §11.2 4단계 파일 호출 후, `undone` 커밋 전 | recover §10.5: `undone` |
+| `undo.xdev.verified` | 볼륨 간 되돌리기의 확정 이름변경 후, `C` 제거 전 | recover §10.5 3행: O 사본 되감기 → `undoable` |
+| `recover.op_reconciled` | §10.1 3단계, 연산 하나 커밋 직후 | recover 를 다시 돌리면 같은 결과(멱등) |
+| `approve.confirmed` | §6.1 4단계 사람 확인 성공 후, 5단계 잠금 전 | 승인 행 없음 → plan `draft` 유지 |
+| `migrate.mid` | store 의 마이그레이션 트랜잭션 중간(06 §7 — 08 소유 아님, 이름만 같은 체계) | 롤백, 백업 존재 |
+
+11 의 기대 결과 표와 맞출 점: F09·F10·F22 의 권한·잠금·읽기 전용 볼륨은 08 에서 사전조건(F3/F5·G8)이 먼저 잡으므로 연산 상태가 `failed` 가 아니라 **`skipped`**(항목은 `failed`)다. 사전조건 뒤의 파일 호출에서 같은 errno 가 나면(주입 `eperm`) `failed`. F04 의 기대는 “목적지 해시 재검증 후 목적지 제거 → `pending`”(§10.3 되감기)로 확정.
 
 ## 16. errno → 오류 코드
 
@@ -854,7 +908,7 @@ _guard(*paths):
 | T4 | 에이전트가 DB 에 승인 행 직접 삽입 | G5 감사 교차 검사 | 삽입 후 apply → `E_APPROVAL_REQUIRED` `approval_not_audited` |
 | T5 | 승인 후 계획 행 변경 | X3 해시 재계산 | 행 1바이트 변경 → `E_APPROVAL_MISMATCH` |
 | T6 | 오래된 승인을 나중에 실행 | G6 24시간 | 시계 주입 25h → `E_APPROVAL_REQUIRED` |
-| T7 | 테스트 승인이 운영에서 동작 | 승인·실행 양쪽에서 두 환경변수 확인 | 환경변수 제거 후 apply → `E_APPROVAL_REQUIRED` |
+| T7 | 테스트 승인이 운영에서 동작 | 승인·실행 양쪽에서 §15.0 유효성 + `DAYCLOSE_TEST_APPROVE` 확인 | 환경변수 제거 후 apply → `E_APPROVAL_REQUIRED` |
 | T8 | 테스트가 실제 파일 변경 | `_guard` 2·3단계 + conftest + 정적 검사 | 샌드박스 밖 경로로 fsops 호출 → `E_SANDBOX_VIOLATION` |
 | T9 | 계획 후 파일 내용 변경 | V2, F3, 볼륨 간 해시 2회·전후 동일성 | 계획 후 수정 → `skipped` `E_STALE`, 항목 `stale`, 나머지 계속(FR-EX-003) |
 | T10 | 계획 후 같은 경로에 다른 파일(바꿔치기) | 동일성 `(dev, inode)` | 교체 → `E_STALE` |
@@ -899,6 +953,22 @@ _guard(*paths):
 | T49 | iCloud 휴지통을 다른 기기들이 동기화한 뒤 undo | undo 는 원래 iCloud 경로로 이름변경 → 재업로드(§9.1-1c 로 확인). 다른 기기에 같은 이름이 새로 생겼다면 원위치 점유 → `--on-conflict` 규칙(덮어쓰기 없음), iCloud 충돌 사본 가능성은 문구로 안내 | 샌드박스: 원위치 점유 → `E_DEST_EXISTS`; 실기기: §9.1-1c |
 | T50 | 사용자가 동기화 루트를 `--icloud-synced no` 로 지정 | 실행 직전 실시간 신호 S1~S3 가 `no` 를 이김(§9.2), `plan.create` 도 같은 신호 사용 | 모드 `no` + S1/S2 신호 주입 → `skipped E_PROTECTED{icloud_synced, live_signal}` |
 | T51 | 계획 후 루트 동기화 상태가 바뀜 | F5 의 상태 비교(§9.2-2·3) | 실효값 전환 주입 → `skipped E_PROTECTED` |
+| T52 | `DAYCLOSE_SANDBOX=$HOME DAYCLOSE_TEST_APPROVE=1` 로 실제 파일을 사람 없이 승인·실행(리뷰 #1) | §15.0 유효성(임시 디렉터리 아래, 실제 홈·`/Volumes`·기본 home 의 조상 아님, 표식 파일) — 시작 시 `E_SANDBOX_VIOLATION`, G4·§6.2 ① 이 같은 판정을 재호출 | 거부 사례 8개(§15.0) |
+| T53 | 가짜 `dayclose-native confirm` 이 `{"ok":true}` 출력(리뷰 #2) | confirm 결과 = Secure Enclave 서명, core 가 `core.app_key` 로 검증. 승인 경로는 앱 번들 안 헬퍼만, `DAYCLOSE_NATIVE`·`~/.local/bin` 무시 | `DAYCLOSE_NATIVE=<가짜>` → 무시; 번들 헬퍼가 서명 없이 성공 출력 → `E_APPROVAL_DENIED{confirm_unverified}` |
+| T54 | 헬퍼를 지워 osascript 로 내려가게 함(T53 의 이웃) | V11 통과 Mac 의 M7 에서는 osascript 로 내려가지 않음 — `confirm_unverified` | 헬퍼 제거 → 거부 |
+| T55 | 보호 규칙이 걸린 하위 폴더를 상위 폴더째 휴지통(리뷰 #3) | F7 `contains_protected_rule`(path_prefix/glob/extension/project) + policy 의 디렉터리 항목 보호 신호(02 §10.1) | `rule add` 하위 경로 → 상위 폴더 trash `skipped E_PROTECTED` |
+| T56 | 에이전트가 자기 P-256 키를 `app-key register`(리뷰 #4) | register 는 실효 채널 `app` 만, 대화상자 문구 “방금 [승인 키 만들기]를 누른 경우에만”, 앱 기동 시 지문 대조·경고 | skill/cli 채널 register → `E_PROTECTED{owner_only}` |
+| T57 | Skill/MCP 결정으로 iCloud 파일 휴지통(리뷰 #5) | V3·`decision.set` 의 `channel ∈ {cli, app}` | skill 채널 결정 → 계획 제외 `E_PROTECTED{icloud_synced}` |
+| T58 | 비밀이 든 일반 파일을 보관 폴더로 복사(리뷰 #6) | `sensitivity=secret` → `archive`/`move` 불가·그룹 제외(`secret_content`), V3·F6 재확인 | secret 엔트리 archive 결정 → `E_PROTECTED{secret_content}` |
+| T59 | 비밀 파일이 든 폴더를 `archive`/`move`(T58 의 이웃) | F7 `contains_secret_content`(DB 의 하위 `sensitivity='secret'`) + 이름 신호 | 하위에 secret 엔트리 → `skipped E_PROTECTED` |
+| T60 | undo 가 저장소에 커밋된 파일·새 자산을 빼냄(리뷰 #15) | §11.1 보호 재평가 — `repo_tracked`/`security_asset`/`dataless`/`icloud_synced` | 이동 후 `git add` → undo `undo_failed E_PROTECTED` |
+| T61 | `--home` 으로 보호 규칙 없는 DB 를 써서 승인(리뷰 #19c) | 기본이 아닌 home 이면 모든 승인 화면에 home 경로 별도 줄 | 요약 함수 단위 테스트 |
+| T62 | 앱이 화면과 다른 계획에 서명(가짜 core, 리뷰 B2) | 앱이 표시한 연산으로 `plan_hash` 재계산, 불일치 시 서명 거부 | `DayCloseKit` 해시 픽스처 교차 테스트 |
+| T63 | 경로 접두사로 루트 소속을 잘못 판정(동기 폴더가 다른 경로로 보임, 리뷰 B1) | `(dev, inode)` 로 루트 소속 판정, 여러 루트면 `icloud_synced` OR | 같은 디렉터리를 두 경로 루트로 등록한 픽스처 |
+| T64 | pty 아래 표식 없는 에이전트가 8자 입력(리뷰 B3) | `cli_tty` 는 GUI 세션이 없을 때만(§6.2 ④, §6.3-0) | `has_gui_session()=True` 주입 → `native_dialog` 경로 |
+| T65 | OCR 전(M5~M6) 환자 스크린샷이 그룹 휴지통으로(리뷰 #16) | 차단하지 않음 — 소유자 진술(이 Mac 들에 환자 자료 없음). 완화: M6 OCR 민감도 상향(07). 휴지통이므로 30일 내 undo 가능 | — (남은 위험 §19.3)
+| T66 | 보호된 파일의 평범한 이름 하드 링크를 보관 폴더로 복사(리뷰 누락) | 객체 단위 보호 — 같은 `(dev, inode)` 의 다른 엔트리 보호를 상속(§9) | 자산 파일에 하드 링크를 만들고 archive 결정 → `E_PROTECTED{hardlink_to_protected}` |
+| T67 | 에이전트가 `--channel cli` 로 자기 신고해 iCloud trash 결정·키 등록(리뷰 #4·#5 의 이웃) | 채널 조건은 위생 규칙 수준 — 실제 방어는 승인 시 사람 확인(iCloud 줄 포함)과 앱 기동 시 키 대조 | — (남은 위험 §19.3 1-5)
 
 ---
 
@@ -948,6 +1018,13 @@ _guard(*paths):
 22. 기기 검사에 host UUID 해시를 더하고, 불일치 시 모든 파일 변경 명령 거부(§7.11).
 23. 휴지통 비움·TCC 거부를 undo 에서 구분해 보고(§11.2).
 24. iCloud 동기화 파일 `trash`(C11): 계획 시 `icloud_propagates=1`, 승인 화면 별도 줄 + `icloud_ack`, 실행 직전 게이트·동기화 상태·dataless 재확인, 상태가 승인 때와 다르면 실행하지 않음. 해제는 §9.1 검증 후 `TRASH_UNLOCK_VERIFIED`.
+26. 샌드박스는 §15.0 유효성 검사를 통과해야만 샌드박스 변수가 효력(리뷰 #1).
+27. M7 confirm 헬퍼는 서명을 돌려주고 번들 경로에서만 찾으며, 검증 실패 시 osascript 로 내려가지 않음(V11 통과 Mac, 리뷰 #2).
+28. F7 에 `contains_protected_rule`·`contains_secret_content` 추가(리뷰 #3·#6).
+29. `app-key register` 는 채널 `app` 만, 앱 기동 시 지문 대조(리뷰 #4).
+30. iCloud trash 는 결정 채널 `cli`/`app` 만(리뷰 #5). `sensitivity=secret` 은 `archive`/`move` 불가(리뷰 #6).
+31. `cli_tty` 는 M5 부터 GUI 세션이 없을 때만, M7 이후 C12 의 예외(리뷰 #13·B3). 앱 서명은 M5 부터 V11 통과 Mac 에서, 서명 전 앱이 `plan_hash` 재계산(B2).
+32. undo 는 현재 위치의 보호를 재평가(리뷰 #15). 루트 소속은 `(dev, inode)` 로(B1). 비기본 home 은 승인 화면에 표시(#19c).
 25. 계획 단계에서 내용이 바뀐 결정은 `decided`+`last_error_code='E_STALE'`(재결정 필요), 실행 단계에서 바뀐 것은 `stale`+`subject_changed`(재탐지).
 
 ### 19.2 기준 문서 변경 요청 — 반영 상태 (2026-11-24 재조정 후)
@@ -969,6 +1046,19 @@ _guard(*paths):
 | R13 | `E_DEVICE_MISMATCH`, `app_meta.host_uuid_sha256` | 반영(02 §11 종료 5, 02 §10.3 4a, 06 §5.1). §7.11 |
 | R14 | iCloud 완화 조건 | 반영 — 소유자 결정 C11. §9.1 이 `TRASH_UNLOCK_VERIFIED` 를 켜는 검증 절차(M5 종료 기준) |
 
+리뷰(spec-review.md, 2026-11-24) 반영으로 기준 문서·다른 문서에 필요한 것:
+- 02 §10.4: §15.0 의 네 조건과 `common/paths.sandbox_status()` 를 계약으로(리뷰 #1 판정대로).
+- 02 §6: `common/fsmeta` 에 `has_gui_session()`(`SessionGetInfo`), `volume_encrypted()`, `gethostuuid` 추가. `proc_pidpath` 는 필요 없음.
+- 02 §10.3 ③·④: ④ 에 “GUI 세션이 없을 때만” 조건(리뷰 #13·B3), M7 의 confirm 헬퍼 서명 검증과 번들 전용 탐색(리뷰 #2), `app_key register` 의 채널 `app` 제한(리뷰 #4).
+- 02 §10.1: `secret_content` 차단 이유 코드, 디렉터리 항목의 “하위 보호 규칙” 신호, iCloud trash 의 결정 채널 조건(리뷰 #3·#5·#6). 06 `blocked_reason` enum 에 `secret_content` 추가.
+- 09 §2·§12: 승인 경로 헬퍼는 번들 고정 경로만, V11 에 “confirm 헬퍼가 앱과 같은 SE 키에 접근 가능한가”와 `has_gui_session()` 실기기 확인 추가.
+- 03: 앱 기동 시 키 지문 대조·경고(리뷰 #4), 서명 전 `plan_hash` 재계산(B2), 승인 화면의 비기본 home 줄·iCloud 줄.
+- 11: §15.3 체크포인트 이름 채택, F09·F10·F22 의 기대 op 상태를 `skipped` 로, 샌드박스 거부 사례 8개, T52~T64 테스트.
+
+판정에 대한 이견(그대로 따랐다):
+- 리뷰 #4 의 “실효 채널 `app` 만” 은 `--channel` 이 자기 신고인 한 셸 권한 에이전트를 막지 못한다(§19.3 1-5). 실제 효력은 “등록에 대화상자 확인 + 앱 기동 시 대조” 쪽에서 나온다. 더 강하게 하려면 등록 요청 자체를 앱이 Secure Enclave 로 서명해야 하는데(키 소유 증명), 그 서명도 소프트웨어 키와 구별되지 않으므로 이득이 없다 — 판정이 현실적인 최선이라고 본다.
+- 리뷰 #1 의 `/private/tmp` 허용은 다른 사용자와 공유되는 디렉터리지만, `_guard` 가 연산을 샌드박스 안으로 가두므로 실제 파일 위험은 없다(§15.0 남는 경계).
+
 기준 문서와 이 문서 사이에 남은 불일치(재조정 담당에 전달):
 - 02 §10.2-5 “볼륨 간 `move` 만 복사→검증(크기+SHA-256)→원본 제거” — `archive` 도 볼륨 간이면 같은 경로이고(§7.4.4, FR-AB-001), 디렉터리는 SHA-256 이 아니라 매니페스트 해시(§4.6). “볼륨 간 `move`·`archive` 만 복사→검증(크기+SHA-256 또는 매니페스트)→원본 제거” 로 고칠 것.
 - 06 §4.4 의 `plan.cancel` 전이는 `executing` 경우만 `E_CANCELLED` 를 명시 — 이 문서는 `draft`/`approved` 취소의 연산 행에도 `E_CANCELLED` 를 쓴다(§7.10). 같은 문구를 06 의 `draft`,`approved` → `cancelled` 행에 넣으면 일치.
@@ -978,6 +1068,9 @@ _guard(*paths):
 
 1. **같은 사용자 권한의 적대적 프로세스**: DB 행·감사 행·해시를 함께 위조하거나, `script(1)` 로 TTY 를 흉내 내 8자를 입력할 수 있다(에이전트 표식을 지운 채). 근본적으로 그런 프로세스는 DayClose 없이도 파일을 지운다(§0).
 1-1. **화면 제어**: 접근성·화면 제어 권한을 가진 도구는 osascript `native_dialog` 의 [승인] 을 누를 수 있다(§6.8). M7 전, 그리고 V11 이 통과하지 못한 Mac 에서는 앱 경로도 이 대화상자로 저하되므로 위험이 남는다. M7 의 LocalAuthentication 대화상자가 이를 닫는다.
+1-3. **환자 스크린샷(M5~M6, 리뷰 #16)**: 이미지의 환자 판정은 M6 OCR 이라, 그 전에는 약국 화면을 찍은 스크린샷이 `personal` 로 남아 그룹 결정으로 휴지통에 갈 수 있다. 소유자가 이 Mac 들에 환자 자료가 없다고 밝혀 차단하지 않는다(PRD 에도 기록). 완화: M6 OCR, 휴지통 이동은 undo 가능.
+1-4. **V11 이 실패한 Mac(M7 이후)**: 서명할 키가 없어 `native_dialog` 가 osascript 로 남는다 — 화면 제어로 승인 가능.
+1-5. **앱 키 등록**: 채널 `app` 제한은 `--channel` 자기 신고를 막지 못하는 셸 권한 에이전트에는 약하다(stdio 를 띄우고 `channel=app` 으로 register 할 수 있음). 등록은 대화상자 확인이 필요하고 앱이 기동 시 지문을 대조해 경고하므로, 위조 등록은 “사람이 의도 없이 한 번 누름 + 다음 앱 기동 전까지”로 좁혀진다.
 1-2. 앱 공개키 **등록**(`core.app_key register`) 자체는 대화상자/TTY 확인이므로, 등록 순간에 화면 제어 도구가 있으면 공격자 키가 등록될 수 있다. 등록은 1회이고 지문을 사람이 앱 화면과 대조하도록 문구로 안내한다.
 2. `~/.Trash` 의 TCC 동작(터미널 FDA 유무에 따른 이름변경 가능 여부)은 실기기 검증 전이다(§18-4).
 3. 전원 차단 내구성(T18·T19)은 자동 테스트로 증명할 수 없다. `F_FULLFSYNC` 에 의존.
