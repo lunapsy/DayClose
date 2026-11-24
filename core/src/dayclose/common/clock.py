@@ -1,8 +1,7 @@
-"""Injectable clock (AGENTS.md §6). `DAYCLOSE_TEST_NOW` is honoured only in sandbox mode."""
+"""Injectable clock (AGENTS.md §6). `DAYCLOSE_TEST_NOW` is honoured only in a valid sandbox."""
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -20,10 +19,11 @@ def now() -> datetime:
     """Current time, timezone-aware UTC."""
     if _override is not None:
         return _override()
-    if os.environ.get("DAYCLOSE_SANDBOX"):
-        fixed = os.environ.get("DAYCLOSE_TEST_NOW")
-        if fixed:
-            return parse_rfc3339(fixed)
+    from dayclose.common import paths  # local: paths is heavier and clock must stay importable
+
+    fixed = paths.sandbox_test_now()  # None unless the sandbox is valid
+    if fixed:
+        return parse_rfc3339(fixed)
     return datetime.now(UTC)
 
 

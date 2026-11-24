@@ -91,3 +91,21 @@ def test_guard_not_active_without_sandbox_env(monkeypatch: pytest.MonkeyPatch) -
         assert paths.install_sandbox_guard() is False
         # The (already installed) hook is inert: reading a stdlib-free path is not refused.
         assert os.path.exists(sys.executable)
+
+
+def test_guard_refuses_sqlite_uri_outside_state_db(sandbox: Sandbox, tmp_path: Path) -> None:
+    import sqlite3
+
+    other = tmp_path.parent / f"{tmp_path.name}-uri.db"
+    with pytest.raises(errors.SafetyError):
+        sqlite3.connect(f"file:{other}?mode=rwc", uri=True)
+    assert not other.exists()
+    inside = sandbox.root / "not-the-state-db.db"
+    with pytest.raises(errors.SafetyError):
+        sqlite3.connect(f"file:{inside}?mode=rwc", uri=True)
+
+
+def test_guard_reads_limited_to_sandbox_not_whole_temp_dir(tmp_path: Path) -> None:
+    sibling = tmp_path.parent  # pytest's base temp: under the user temp dir, outside us
+    with pytest.raises(errors.SafetyError):
+        os.listdir(sibling)

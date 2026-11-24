@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
 from conftest import CORE_DIR, REPO_DIR, TESTS_DIR
 
 SRC = CORE_DIR / "src" / "dayclose"
@@ -96,13 +97,46 @@ def _os_open_writes(call: ast.Call) -> bool:
     return bool(names & WRITE_FLAGS)
 
 
-def _mutations(path: Path) -> list[tuple[str, int]]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+MUTATING_MODULES = frozenset({"os", "shutil", "posix", "_os"})
+
+
+def _mutations_in_source(text: str) -> list[tuple[str, int]]:
+    tree = ast.parse(text)
     out: list[tuple[str, int]] = []
+    called: set[int] = set()
     for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called.add(id(node.func))
+    for node in ast.walk(tree):
+        # `from os import unlink`, `from shutil import rmtree as r`: a mutating callable
+        # bound under a bare name escapes the attribute checks below, so the import itself
+        # is the finding.
+        if isinstance(node, ast.ImportFrom) and node.module in MUTATING_MODULES:
+            for alias in node.names:
+                if alias.name in MUTATING_ATTRS or alias.name in ("open", "*"):
+                    out.append((f"from {node.module} import {alias.name}", node.lineno))
+            continue
+        # `u = os.unlink` (a reference, not a call): aliasing a mutating function.
+        if (
+            isinstance(node, ast.Attribute)
+            and id(node) not in called
+            and isinstance(node.value, ast.Name)
+            and node.value.id in MUTATING_MODULES
+            and (node.attr in MUTATING_ATTRS or node.attr == "open")
+        ):
+            out.append((f"ref {node.value.id}.{node.attr}", node.lineno))
+            continue
         if not isinstance(node, ast.Call):
             continue
         f = node.func
+        if isinstance(f, ast.Name) and f.id == "getattr" and len(node.args) >= 2:
+            name = node.args[1]
+            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                if name.value in MUTATING_ATTRS or name.value == "open":
+                    out.append((f"getattr {name.value}", node.lineno))
+            elif isinstance(node.args[0], ast.Name) and node.args[0].id in MUTATING_MODULES:
+                out.append(("getattr dynamic", node.lineno))
+            continue
         if isinstance(f, ast.Name) and f.id == "open" and _open_writes(node):
             out.append(("open", node.lineno))
         elif isinstance(f, ast.Attribute):
@@ -124,15 +158,76 @@ def _mutations(path: Path) -> list[tuple[str, int]]:
     return out
 
 
-def test_no_mutation_outside_executor() -> None:
-    assert not (SRC / "executor").exists() or not _py_files(SRC / "executor")  # M1: none
+def _mutations(path: Path) -> list[tuple[str, int]]:
+    return _mutations_in_source(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "import os\nos.remove(p)\n",
+        "import os as _o\n_o.rename(a, b)\n",
+        "from pathlib import Path\nPath(p).unlink()\n",
+        "from shutil import rmtree\nrmtree(p)\n",
+        "from os import unlink as _u\n_u(p)\n",
+        "from os import *\n",
+        "import os\ngetattr(os, 'unlink')(p)\n",
+        "import os\nname = 'unlink'\ngetattr(os, name)(p)\n",
+        "import os\nu = os.unlink\nu(p)\n",
+        "import shutil\nf = shutil.move\n",
+        "open(p, 'w').write('x')\n",
+        "import os\nos.open(p, os.O_WRONLY | os.O_CREAT)\n",
+    ],
+)
+def test_static_check_catches_injected_mutation(snippet: str, tmp_path: Path) -> None:
+    """Negative self-test: each forbidden form, injected into a temp module copy, is found."""
+    mod = tmp_path / "injected.py"
+    mod.write_text("p = a = b = 'x'\n" + snippet)
+    assert _mutations(mod), snippet
+
+
+def test_static_check_ignores_harmless_forms(tmp_path: Path) -> None:
+    mod = tmp_path / "harmless.py"
+    mod.write_text(
+        "import os, sys\nfrom os import path, fspath\nsys.stdout.write('x')\n"
+        "'a'.replace('a', 'b')\nopen('x', 'rb').read()\nos.stat('x')\n"
+    )
+    assert _mutations(mod) == []
+
+
+def _offenders(src: Path) -> list[str]:
     offenders = []
-    for path in _py_files(SRC):
-        rel = path.relative_to(SRC).as_posix()
+    for path in _py_files(src):
+        rel = path.relative_to(src).as_posix()
         for name, line in _mutations(path):
             if (rel, name) not in ALLOWED:
                 offenders.append(f"{rel}:{line} {name}")
-    assert offenders == []
+    return offenders
+
+
+def test_no_mutation_outside_executor() -> None:
+    assert not (SRC / "executor").exists() or not _py_files(SRC / "executor")  # M1: none
+    assert _offenders(SRC) == []
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "from shutil import rmtree\nrmtree('/x')\n",
+        "from os import unlink as _u\n_u('/x')\n",
+        "import os\ngetattr(os, 'unlink')('/x')\n",
+        "import os as _o\n_o.rename('/a', '/b')\n",
+    ],
+)
+def test_injected_mutation_in_src_copy_fails_the_check(injected: str, tmp_path: Path) -> None:
+    """Copy the real package, inject one forbidden form into collect/fs.py, expect failure."""
+    import shutil as _sh
+
+    copy = tmp_path / "dayclose"
+    _sh.copytree(SRC, copy, ignore=_sh.ignore_patterns("__pycache__"))
+    target = copy / "collect" / "fs.py"
+    target.write_text(target.read_text(encoding="utf-8") + "\n" + injected, encoding="utf-8")
+    assert any(o.startswith("collect/fs.py:") for o in _offenders(copy))
 
 
 def test_allowlist_entries_are_used() -> None:

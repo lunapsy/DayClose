@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import statistics
 import time
 from datetime import datetime
+from typing import Any
 
 import pytest
 from conftest import RunCli, Sandbox
@@ -13,7 +13,9 @@ from fixtures.sandbox import build_sandbox
 
 
 @pytest.mark.perf
-def test_m1_warm_scan_10k(initialized: RunCli, sandbox: Sandbox, now: datetime) -> None:
+def test_m1_warm_scan_10k(
+    initialized: RunCli, sandbox: Sandbox, now: datetime, record_perf: Any
+) -> None:
     cli = initialized
     build_sandbox(sandbox.root, "perf_10k", now=now)
     assert (
@@ -29,21 +31,19 @@ def test_m1_warm_scan_10k(initialized: RunCli, sandbox: Sandbox, now: datetime) 
         s = res.data["stats"]
         assert (s["created"], s["modified"], s["deleted"], s["moved"]) == (0, 0, 0, 0)
     best = min(timings)
-    print(
-        json.dumps(
-            {
-                "test": "m1_warm_scan_10k",
-                "entries": 10_100,
-                "wall_s": [round(t, 3) for t in timings],
-                "best_s": round(best, 3),
-            }
-        )
+    record_perf(
+        {
+            "test": "m1_warm_scan_10k",
+            "entries": 10_100,
+            "wall_s": [round(t, 3) for t in timings],
+            "best_s": round(best, 3),
+        }
     )
     assert best <= 2.0
 
 
 @pytest.mark.perf
-def test_nfr_perf_003_version_startup(cli: RunCli) -> None:
+def test_nfr_perf_003_version_startup(cli: RunCli, record_perf: Any) -> None:
     timings = []
     for _ in range(20):
         start = time.monotonic()
@@ -51,13 +51,11 @@ def test_nfr_perf_003_version_startup(cli: RunCli) -> None:
         timings.append(time.monotonic() - start)
     rest = sorted(timings[1:])
     p95 = rest[int(len(rest) * 0.95) - 1]
-    print(
-        json.dumps(
-            {
-                "test": "version_startup",
-                "median_s": round(statistics.median(rest), 3),
-                "p95_s": round(p95, 3),
-            }
-        )
+    record_perf(
+        {
+            "test": "version_startup",
+            "median_s": round(statistics.median(rest), 3),
+            "p95_s": round(p95, 3),
+        }
     )
     assert p95 <= 0.25

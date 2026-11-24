@@ -388,3 +388,74 @@ def test_fr_core_008_legacy_placeholder_is_dataless(sandbox: Sandbox) -> None:
     opened.clear()  # the test's own write above
     data = ok("scan.run")
     assert data["stats"]["dataless_skipped"] == 1 and opened == []
+
+
+def test_root_add_reports_identity_overlap(sandbox: Sandbox) -> None:
+    init()
+    real = sandbox.mkdir("Desktop")
+    alias = sandbox.user / "Alias"
+    alias.symlink_to(real)
+    first = ok("root.add", path=str(real), kind="desktop")["root"]
+    second = ok("root.add", path=str(alias), kind="custom")["root"]
+    assert second["overlaps"] == [first["id"]]  # same directory under another spelling
+    (real / "sub").mkdir()
+    inner = ok("root.add", path=str(alias / "sub"), kind="custom")["root"]
+    assert set(inner["overlaps"]) == {first["id"], second["id"]}
+
+
+def test_selected_duplicate_root_is_not_traversed(sandbox: Sandbox, now: Any) -> None:
+    init()
+    build_sandbox(sandbox.root, "minimal", now=now)
+    dl = sandbox.user / "Downloads"
+    alias = sandbox.user / "dl-alias"
+    alias.symlink_to(dl)
+    ok("root.add", path=str(dl), kind="downloads")
+    ok("root.add", path=str(alias), kind="custom")
+    ok("scan.run", root_ids=["root_1"])
+    data = ok("scan.run", root_ids=["root_2"])
+    assert data["roots"] == [
+        {"root_id": "root_2", "status": "ok", "entries_seen": 0, "duplicate_of": "root_1"}
+    ]
+    conn = sqlite3.connect(sandbox.home / "dayclose.db")
+    owners = {r[0] for r in conn.execute("SELECT root_id FROM file_entries")}
+    conn.close()
+    assert owners == {1}
+
+
+def test_state_dir_excluded_by_identity(sandbox: Sandbox) -> None:
+    """A root that contains DAYCLOSE_HOME under another spelling still skips it."""
+    init()
+    link = sandbox.user / "via-link"
+    link.symlink_to(sandbox.root)
+    ok("root.add", path=str(link), kind="custom")
+    ok("scan.run")
+    conn = sqlite3.connect(sandbox.home / "dayclose.db")
+    names = {r[0] for r in conn.execute("SELECT name FROM file_entries")}
+    conn.close()
+    assert "dayclose.db" not in names and "config.toml" not in names
+
+
+def test_unreachable_inner_root_not_entered_by_outer(sandbox: Sandbox) -> None:
+    init(scan__volume_probe_timeout_s=1)
+    outer = sandbox.mkdir("Outer")
+    inner = sandbox.mkdir("Outer/Inner")
+    (inner / "f.txt").write_text("x")
+    ok("root.add", path=str(outer), kind="custom")
+    ok("root.add", path=str(inner), kind="custom")
+    real = paths._default_probe_stat
+
+    def probe_stat(path: str) -> None:
+        if path == str(inner):
+            raise PermissionError(errno.EPERM, "denied", path)
+        real(path)
+
+    paths.probe_stat = probe_stat
+    listed: list[str] = []
+
+    def audit(event: str, args: tuple[Any, ...]) -> None:
+        if event == "os.scandir" and args and str(args[0]) == str(inner):
+            listed.append(event)
+
+    sys.addaudithook(audit)
+    env, code = run("scan.run")
+    assert code == 0 and listed == []

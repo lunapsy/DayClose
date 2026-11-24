@@ -161,6 +161,9 @@ class ScanSettings:
     max_entries_per_root: int
     hash_max_bytes: int
     builtin_excluded_paths: frozenset[str]
+    # (st_dev, st_ino) of DAYCLOSE_HOME / caches / logs: matched by identity, so a different
+    # spelling of the same directory (/var vs /private/var, a symlinked root) is still skipped.
+    builtin_excluded_ids: frozenset[tuple[int, int]] = frozenset()
 
 
 Progress = Callable[[int, int], None]  # (root_id, done)
@@ -248,12 +251,15 @@ def traverse(
     settings: ScanSettings,
     other_root_ids: Iterable[tuple[int, int]],
     progress: Progress | None = None,
+    other_root_paths: Iterable[str] = (),
 ) -> Traversal:
     """Walk one root with an explicit stack (04 §2.1). Never follows symlinks.
 
     `other_root_ids` are the (st_dev, st_ino) of the other active root directories: a
     sub-directory with one of those identities belongs to that root and is pruned here
-    (identity, not path, comparison - 04 §1.1).
+    (identity, not path, comparison - 04 §1.1). `other_root_paths` are roots whose identity
+    is unknown this run (they did not answer the probe): pruned by path, so the outer
+    traversal never walks into a hung or denied inner root.
     """
     tr = Traversal(root_id=root.id)
     try:
@@ -264,6 +270,8 @@ def traverse(
         return tr
     root_dev = root_st.st_dev
     inner = frozenset(other_root_ids) - {(root_st.st_dev, root_st.st_ino)}
+    inner_paths = frozenset(other_root_paths) - {root.path}
+    excluded_ids = settings.builtin_excluded_ids
     excludes = settings.excludes
     hook = flags_hook
     stack: list[tuple[str, str, int]] = [(root.path, "", 0)]
@@ -295,6 +303,9 @@ def traverse(
             path = e.path
             if path in settings.builtin_excluded_paths:
                 continue
+            if path in inner_paths:
+                tr.safe_prefixes.append(path)  # an unreachable inner root keeps its entries
+                continue
             try:
                 st = e.stat(follow_symlinks=False)
             except FileNotFoundError:
@@ -308,6 +319,8 @@ def traverse(
             mode = st.st_mode
             is_dir = stat_mod.S_ISDIR(mode)
             rel = f"{drel}/{name}" if drel else name
+            if is_dir and (st.st_dev, st.st_ino) in excluded_ids:
+                continue
             if is_dir and (st.st_dev, st.st_ino) in inner:
                 tr.safe_prefixes.append(path)  # owned by the inner (more specific) root
                 continue

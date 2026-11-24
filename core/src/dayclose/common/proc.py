@@ -51,7 +51,7 @@ def run_tool(
         raise EnvironmentError_(
             "E_TOOL_MISSING", "필요한 외부 도구를 찾을 수 없습니다.", {"tool": tool}
         )
-    if tool in _APPROVAL_PATH_TOOLS and paths.sandbox_root() is None:
+    if tool in _APPROVAL_PATH_TOOLS and not paths.sandbox_status().valid:
         _check_trusted(exe)
     fixed_env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",

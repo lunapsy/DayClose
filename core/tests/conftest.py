@@ -82,7 +82,9 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sandbox
         return real_expanduser(p)
 
     monkeypatch.setattr(os.path, "expanduser", _expanduser)
+    paths.set_active_home(None)
     yield Sandbox(root=root, home=root / "home", user=user)
+    paths.set_active_home(None)
     clock.set_clock(None)
     fs_collector.flags_hook = None
     paths.probe_stat = paths._default_probe_stat
@@ -184,6 +186,33 @@ def cli(sandbox: Sandbox) -> RunCli:
         return CliResult(proc.returncode, proc.stdout, proc.stderr)
 
     return run
+
+
+# Performance measurements (11 §7, 12 M1b "측정값 기록"): collected during the run and
+# written after the session (outside every test's sandbox guard) to PERF_RESULTS_FILE.
+PERF_RESULTS_FILE = CORE_DIR / ".perf-results" / "m1-perf.jsonl"
+_PERF: list[dict[str, Any]] = []
+
+
+@pytest.fixture
+def record_perf() -> Callable[[dict[str, Any]], None]:
+    def record(result: dict[str, Any]) -> None:
+        print(json.dumps(result))
+        _PERF.append(result)
+
+    return record
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if not _PERF:
+        return
+    PERF_RESULTS_FILE.parent.mkdir(exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with open(PERF_RESULTS_FILE, "a", encoding="utf-8") as fh:
+        for r in _PERF:
+            fh.write(
+                json.dumps({"measured_at": stamp, "python": sys.version.split()[0], **r}) + "\n"
+            )
 
 
 @pytest.fixture

@@ -117,3 +117,82 @@ def test_sandbox_home_outside_sandbox_rejected(
 def test_valid_sandbox_accepted(cli: RunCli, sandbox: Sandbox) -> None:
     assert _run(cli, str(sandbox.root), str(sandbox.home)) == (0, "")
     assert os.path.isfile(sandbox.root / ".dayclose-sandbox")
+
+
+# --------------------------------------------------------------------------- sandbox_status()
+
+
+def test_sandbox_status_states(monkeypatch: pytest.MonkeyPatch, sandbox: Sandbox) -> None:
+    st = paths.sandbox_status(sandbox.home)
+    assert (st.state, st.reason, st.root) == ("valid", None, sandbox.root)
+    marker = sandbox.root / ".dayclose-sandbox"
+    marker.unlink()
+    try:
+        assert paths.sandbox_status(sandbox.home) == paths.SandboxStatus(
+            "invalid", "marker_missing", sandbox.root
+        )
+    finally:
+        marker.touch()
+    assert paths.sandbox_status(sandbox.root.parent / "x").reason == "home_outside_sandbox"
+    with monkeypatch.context() as m:
+        m.delenv("DAYCLOSE_SANDBOX")
+        assert paths.sandbox_status().state == "off"
+
+
+def test_clock_test_now_only_with_valid_sandbox(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from dayclose.common import clock
+
+    fixed = datetime(2026, 11, 24, 12, tzinfo=UTC)
+    monkeypatch.setenv("DAYCLOSE_TEST_NOW", "2026-11-24T12:00:00Z")
+    assert clock.now() == fixed
+    marker = sandbox.root / ".dayclose-sandbox"
+    marker.unlink()  # sandbox set but invalid -> the test clock is ignored
+    try:
+        assert clock.now() != fixed
+    finally:
+        marker.touch()
+
+
+def test_test_approve_ignored_without_valid_sandbox(cli: RunCli, sandbox: Sandbox) -> None:
+    """M1 has no approval path; what M1 can guarantee is that DAYCLOSE_TEST_APPROVE is never
+    readable unless the sandbox is valid, and that an invalid sandbox refuses to start."""
+    import os as _os
+
+    _os.environ["DAYCLOSE_TEST_APPROVE"] = "1"
+    try:
+        assert paths.sandbox_only_env("DAYCLOSE_TEST_APPROVE") == "1"
+        marker = sandbox.root / ".dayclose-sandbox"
+        marker.unlink()
+        try:
+            assert paths.sandbox_only_env("DAYCLOSE_TEST_APPROVE") is None
+            res = cli("init", "--no-default-roots")
+            assert res.returncode == 5
+            assert res.envelope["error"]["details"]["reason"] == "marker_missing"
+            assert not (sandbox.home / "dayclose.db").exists()
+        finally:
+            marker.touch()
+    finally:
+        del _os.environ["DAYCLOSE_TEST_APPROVE"]
+
+
+def test_only_paths_reads_sandbox_env_vars() -> None:
+    """02 §10.4: other modules use sandbox_status(), never the variables themselves."""
+    import ast
+
+    src = Path(paths.__file__).resolve().parents[1]
+    bad = []
+    for p in sorted(src.rglob("*.py")):
+        if p.name == "paths.py" and p.parent.name == "common":
+            continue
+        for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and (node.value == "DAYCLOSE_SANDBOX" or node.value.startswith("DAYCLOSE_TEST_"))
+            ):
+                bad.append(f"{p.relative_to(src)}:{node.lineno}")
+    assert bad == []

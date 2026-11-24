@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -32,11 +33,19 @@ CLOUD_STORAGE_REL = "Library/CloudStorage"
 # --------------------------------------------------------------------------- sandbox / home
 
 
+_SANDBOX_VAR = "DAYCLOSE_SANDBOX"
+SANDBOX_ONLY_VARS = ("DAYCLOSE_TEST_APPROVE", "DAYCLOSE_TEST_NOW", "DAYCLOSE_TEST_FAULT")
+
+
+def _sandbox_env() -> str | None:
+    """The one raw reader of DAYCLOSE_SANDBOX. Everything else goes through sandbox_status()."""
+    return os.environ.get(_SANDBOX_VAR) or None
+
+
 def sandbox_root() -> Path | None:
-    value = os.environ.get("DAYCLOSE_SANDBOX")
-    if not value:
-        return None
-    return Path(os.path.realpath(value))
+    """realpath of DAYCLOSE_SANDBOX when it is set (validity is sandbox_status()'s job)."""
+    value = _sandbox_env()
+    return None if value is None else Path(os.path.realpath(value))
 
 
 def user_home() -> Path:
@@ -45,7 +54,7 @@ def user_home() -> Path:
     Sandbox mode remaps it to `$DAYCLOSE_SANDBOX/user` (11 §2.3, third layer) so that
     nothing in sandbox mode can resolve to the real home.
     """
-    raw = os.environ.get("DAYCLOSE_SANDBOX")
+    raw = _sandbox_env()
     if raw:
         # As given (not realpath'd), so paths typed by the user keep matching it.
         return Path(os.path.abspath(raw)) / "user"
@@ -100,26 +109,75 @@ def _sandbox_refusal(reason: str) -> SafetyError:
     )
 
 
-def validate_sandbox(home: Path) -> None:
-    """Sandbox validity (02 §10.4). Raises E_SANDBOX_VIOLATION before anything is touched.
+@dataclass(frozen=True)
+class SandboxStatus:
+    """Result of sandbox_status(): `off`, `valid`, or `invalid` with a reason (02 §10.4)."""
 
-    No-op when DAYCLOSE_SANDBOX is unset.
+    state: str
+    reason: str | None = None
+    root: Path | None = None
+
+    @property
+    def valid(self) -> bool:
+        return self.state == "valid"
+
+
+class _ActiveHome:
+    home: Path | None = None
+
+
+def set_active_home(home: Path | None) -> None:
+    """The DAYCLOSE_HOME of the running command (it may come from --home, not the env)."""
+    _ActiveHome.home = home
+
+
+def sandbox_status(home: Path | None = None) -> SandboxStatus:
+    """The single sandbox-validity check (02 §10.4, 08 §15.0). All four conditions:
+
+    1. realpath(DAYCLOSE_SANDBOX) is strictly under the user temp dir or /private/tmp;
+    2. it is neither equal to nor an ancestor of the real home (pw_dir), /Volumes or the
+       default DAYCLOSE_HOME;
+    3. the marker file `.dayclose-sandbox` exists in it;
+    4. DAYCLOSE_HOME is inside it.
     """
-    sb = sandbox_root()
-    if sb is None:
-        return
-    sb_s = str(sb)
+    raw = _sandbox_env()
+    if raw is None:
+        return SandboxStatus("off")
+    sb_s = os.path.realpath(raw)
+    root = Path(sb_s)
     if not any(is_under(sb_s, t) and sb_s != t for t in _user_temp_dirs()):
-        raise _sandbox_refusal("not_under_temp_dir")
+        return SandboxStatus("invalid", "not_under_temp_dir", root)
     rh = real_home()
-    protected = [rh, "/Volumes", os.path.join(rh, APP_SUPPORT_REL)]
-    for p in protected:
+    for p in (rh, "/Volumes", os.path.join(rh, APP_SUPPORT_REL)):
         if is_under(p, sb_s):  # equal to, or an ancestor of, a protected location
-            raise _sandbox_refusal("contains_protected_location")
+            return SandboxStatus("invalid", "contains_protected_location", root)
     if not os.path.isfile(os.path.join(sb_s, SANDBOX_MARKER)):
-        raise _sandbox_refusal("marker_missing")
+        return SandboxStatus("invalid", "marker_missing", root)
+    home = home or _ActiveHome.home or resolve_home(None)
     if not is_under(os.path.realpath(home), sb_s):
-        raise _sandbox_refusal("home_outside_sandbox")
+        return SandboxStatus("invalid", "home_outside_sandbox", root)
+    return SandboxStatus("valid", None, root)
+
+
+def sandbox_only_env(name: str) -> str | None:
+    """A sandbox-only variable (DAYCLOSE_TEST_*): its value only when the sandbox is valid."""
+    if name not in SANDBOX_ONLY_VARS:
+        raise ValueError(name)
+    if not sandbox_status().valid:
+        return None
+    return os.environ.get(name) or None
+
+
+def sandbox_test_now() -> str | None:
+    """DAYCLOSE_TEST_NOW, honoured only in a valid sandbox (common/clock)."""
+    return sandbox_only_env("DAYCLOSE_TEST_NOW")
+
+
+def validate_sandbox(home: Path) -> None:
+    """Refuse to start (E_SANDBOX_VIOLATION) unless the sandbox is `off` or `valid`."""
+    status = sandbox_status(home)
+    if status.state == "invalid":
+        raise _sandbox_refusal(status.reason or "invalid")
 
 
 def check_home_in_sandbox(home: Path) -> None:
@@ -463,8 +521,8 @@ def _read_allowlist() -> list[str]:
         "/dev/null",
         "/dev/tty",
         "/dev/urandom",
-        *_user_temp_dirs(),  # never tempfile.gettempdir(): it probes by writing a file
     }
+    # Note: the user temp dir as a whole is *not* readable - only the sandbox itself is.
     # The installed package itself (core/src in an editable install) and the repository's
     # contracts/ directory. core/tests is added by the test harness (failure tracebacks).
     pkg = Path(__file__).resolve().parents[2]
@@ -496,7 +554,7 @@ def _as_path(value: Any) -> str | None:
 
 
 def _guard_hook(event: str, args: tuple[Any, ...]) -> None:
-    sb_env = os.environ.get("DAYCLOSE_SANDBOX")
+    sb_env = _sandbox_env()
     if not sb_env:
         return
     if event == "open":
@@ -516,7 +574,10 @@ def _guard_hook(event: str, args: tuple[Any, ...]) -> None:
             if i >= len(args):
                 continue
             target = _as_path(args[i])
-            if target is None or target == ":memory:" or target.startswith("file:"):
+            if target is None or target == ":memory:":
+                continue
+            if target.startswith("file:"):
+                _check_sqlite_uri(target, sb_env, event)
                 continue
             dir_fd = args[fd_i] if fd_i is not None and fd_i < len(args) else None
             _check(_with_dir_fd(target, dir_fd), sb_env, True, event)
@@ -558,6 +619,17 @@ def _with_dir_fd(target: str, dir_fd: Any) -> str:
     return target
 
 
+def _check_sqlite_uri(uri: str, sb_env: str, event: str) -> None:
+    """A `file:` URI connect is allowed only for the DayClose state DB of the running command
+    (the read-only `core.version` peek); any other URI target is refused."""
+    path = uri[len("file:") :].split("?", 1)[0]
+    home = _ActiveHome.home
+    if home is not None and os.path.realpath(path) == os.path.realpath(home / "dayclose.db"):
+        _check(path, sb_env, True, event)
+        return
+    raise sandbox_violation(path, event)
+
+
 def _check(target: str, sb_env: str, writing: bool, event: str) -> None:
     real = os.path.realpath(target)
     sb = os.path.realpath(sb_env)
@@ -579,7 +651,7 @@ def install_sandbox_guard() -> bool:
     The hook stays installed for the process lifetime (audit hooks cannot be removed) and
     re-reads DAYCLOSE_SANDBOX on every event, so it is inert when the variable is unset.
     """
-    if not os.environ.get("DAYCLOSE_SANDBOX"):
+    if _sandbox_env() is None:
         return False
     # Writing .pyc files next to the source would be a write outside the sandbox.
     sys.dont_write_bytecode = True

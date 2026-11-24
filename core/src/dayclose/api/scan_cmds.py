@@ -69,7 +69,15 @@ def _settings(ctx: Context) -> fs.ScanSettings:
         os.path.join(home, paths.CACHES_REL),
         os.path.join(home, paths.LOGS_REL),
     }
+    excluded_ids = set()
+    for p in builtin:
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        excluded_ids.add((st.st_dev, st.st_ino))
     return fs.ScanSettings(
+        builtin_excluded_ids=frozenset(excluded_ids),
         excludes=fs.ExcludeRules.compile(cfg.get("scan.exclude_globs")),
         package_dirs_as_files=bool(cfg.get("scan.package_dirs_as_files")),
         max_entries_per_root=int(cfg.get("scan.max_entries_per_root")),
@@ -219,6 +227,11 @@ def _scan_fs(
                 )
             continue
         ident = root_ident.get(r.id)
+        # The smallest active root id with this identity owns it (04 §1.1), even when only a
+        # larger duplicate was selected with --root.
+        owner = min((k for k, v in root_ident.items() if v == ident), default=r.id)
+        if ident is not None and owner != r.id:
+            identities.setdefault(ident, owner)
         if ident is not None and ident in identities:
             stats["duplicate_roots"] += 1
             results[r.id] = {
@@ -232,6 +245,7 @@ def _scan_fs(
         if ident is not None:
             identities[ident] = r.id
         inner = [v for k, v in root_ident.items() if k != r.id]
+        unreachable = [o.path for o in active if o.id != r.id and o.id not in root_ident]
         spec = fs.RootSpec(id=r.id, path=r.path, kind=r.kind, max_depth=r.max_depth)
 
         def progress(root_id: int, done: int) -> None:
@@ -239,7 +253,7 @@ def _scan_fs(
                 {"phase": "fs", "root_id": ids.to_ext("root", root_id), "done": done, "total": None}
             )
 
-        tr = fs.traverse(spec, settings, inner, progress if ctx.progress else None)
+        tr = fs.traverse(spec, settings, inner, progress if ctx.progress else None, unreachable)
         traversals[r.id] = tr
         if not tr.traversed:
             failures.append(tr.access)
@@ -293,7 +307,7 @@ def _scan_fs(
         )
 
     all_failed = (
-        bool(selected)
+        bool(failures)  # only duplicates selected is not a failure
         and not done
         and len(failures) == len([r for r in results.values() if not r.get("duplicate_of")])
     )

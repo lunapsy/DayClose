@@ -67,6 +67,7 @@ class Context:
     home: Path
     home_overridden: bool
     channel: str
+    requested_channel: str
     wait_lock: float
     progress: bool
     log_level: str
@@ -133,10 +134,17 @@ def command(
     return deco
 
 
+# Explicit channels that keep their meaning under an agent marker; any other requested
+# channel (cli, app, test) is elevated to `skill` (02 §5.2, §10.3-4b).
+_NOT_ELEVATED = frozenset({"skill", "mcp", "schedule"})
+
+
 def effective_channel(requested: str, env: Mapping[str, str] | None = None) -> str:
-    """`cli` is promoted to `skill` when an agent environment marker is present (10 §8.5)."""
+    """Agent markers in the environment make the channel `skill` whatever --channel says,
+    except an explicit skill/mcp/schedule. The real app spawns the core with a clean,
+    allow-listed environment, so it never carries markers (10 §8.5)."""
     environ = os.environ if env is None else env
-    if requested == "cli" and any(environ.get(m) for m in AGENT_ENV_MARKERS):
+    if requested not in _NOT_ELEVATED and any(environ.get(m) for m in AGENT_ENV_MARKERS):
         return "skill"
     return requested
 
@@ -159,13 +167,15 @@ def owner_only_refused(
 ) -> bool:
     """02 §10.3-4b. Agent channels may not run owner-only commands.
 
-    Sole exception: inside a valid sandbox, a `skill` channel that came *only* from marker
-    promotion (no explicit --channel) is allowed, so tests and coding agents can run the CLI.
+    Sole exception: inside a valid sandbox, a `skill` channel that came only from marker
+    elevation (requested cli/app/test) is allowed, so tests and coding agents can run the
+    CLI. An explicit --channel skill|mcp is refused everywhere; outside a valid sandbox
+    there is no exception at all.
     """
     if effective not in AGENT_CHANNELS or not is_owner_only(command_id, args):
         return False
-    promoted_only = requested == "cli" and effective == "skill"
-    return not (promoted_only and sandbox_valid)
+    elevated = requested != effective
+    return not (elevated and sandbox_valid)
 
 
 def is_initialized(home: Path) -> bool:
@@ -216,6 +226,15 @@ def _device_id(ctx: Context) -> str | None:
     return cfg.device_id or None
 
 
+def _audit_summary(ctx: Context) -> str:
+    """audit_log.channel holds the effective channel; the requested one goes in the summary
+    when it differs (no DDL column for it)."""
+    summary = ctx.audit.summary or ctx.command
+    if ctx.requested_channel != ctx.channel:
+        summary += f" requested_channel={ctx.requested_channel}"
+    return summary
+
+
 def _record_audit(ctx: Context, ok: bool, error_code: str | None) -> None:
     if ctx.conn is None or ctx.lock is None:
         return
@@ -230,7 +249,7 @@ def _record_audit(ctx: Context, ok: bool, error_code: str | None) -> None:
             error_code=error_code,
             target_type=ctx.audit.target_type,
             target_ids=ctx.audit.target_ids,
-            summary=ctx.audit.summary or ctx.command,
+            summary=_audit_summary(ctx),
         )
     except sqlite3.Error:
         dlog.get_logger().warning(
@@ -247,6 +266,7 @@ def execute(command_id: str, args: dict[str, Any], options: Options) -> tuple[di
         home=home,
         home_overridden=paths.home_was_overridden(options.home),
         channel=options.channel,
+        requested_channel=options.channel,
         wait_lock=options.wait_lock,
         progress=options.progress == "ndjson",
         log_level=options.log_level,
@@ -257,6 +277,7 @@ def execute(command_id: str, args: dict[str, Any], options: Options) -> tuple[di
     restore_sigint: Any = None
     home_ok = False
     try:
+        paths.set_active_home(home)
         paths.check_home_in_sandbox(home)
         home_ok = True
         paths.install_sandbox_guard()
@@ -273,7 +294,7 @@ def execute(command_id: str, args: dict[str, Any], options: Options) -> tuple[di
                 {"reason": "channel_not_allowed"},
             )
         if owner_only_refused(
-            command_id, args, options.channel, ctx.channel, paths.sandbox_root() is not None
+            command_id, args, options.channel, ctx.channel, paths.sandbox_status(home).valid
         ):
             raise SafetyError(
                 "E_PROTECTED", "이 명령은 소유자만 실행할 수 있습니다.", {"reason": "owner_only"}
@@ -344,6 +365,7 @@ def execute(command_id: str, args: dict[str, Any], options: Options) -> tuple[di
         },
     )
     dlog.shutdown()
+    paths.set_active_home(None)
     if error is None:
         return envelope.success(command_id, data, ctx.warnings, meta), 0
     return envelope.failure(command_id, error, ctx.warnings, meta), error.exit_code

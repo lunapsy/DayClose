@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from typing import Any
 
@@ -56,12 +57,46 @@ def root_json(root: repo.RootRow, *, with_removed: bool = False) -> dict[str, An
     return out
 
 
-def overlaps(conn: sqlite3.Connection, root: repo.RootRow) -> list[str]:
+def _ident(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
+
+
+def _chain(path: str) -> set[tuple[int, int]]:
+    """Identities of the directory and all its ancestors (stat only)."""
+    out: set[tuple[int, int]] = set()
+    cur = os.path.realpath(path)
+    while True:
+        ident = _ident(cur)
+        if ident is not None:
+            out.add(ident)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return out
+        cur = parent
+
+
+def overlaps(conn: sqlite3.Connection, root: repo.RootRow, timeout: float) -> list[str]:
+    """Other roots that are the same directory, an ancestor or a descendant - compared by
+    (dev, inode), not by path, so a symlinked spelling of the same tree is reported
+    (04 §1.1, 10 §2.3). A root that does not answer the probe falls back to path comparison."""
+    mine = _chain(root.path)
+    my_id = _ident(root.path)
     out = []
     for other in repo.list_roots(conn):
         if other.id == root.id:
             continue
-        if paths.is_under(other.path, root.path) or paths.is_under(root.path, other.path):
+        if paths.probe(other.path, timeout) != "ok":
+            hit = paths.is_under(other.path, root.path) or paths.is_under(root.path, other.path)
+        else:
+            oid = _ident(other.path)
+            hit = (oid is not None and oid in mine) or (
+                my_id is not None and my_id in _chain(other.path)
+            )
+        if hit:
             out.append(ids.to_ext("root", other.id))
     return out
 
@@ -162,7 +197,7 @@ def root_add(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     ctx.audit.target_ids = [ids.to_ext("root", root.id)]
     ctx.audit.summary = f"root.add kind={root.kind}"
     body = root_json(root)
-    body["overlaps"] = overlaps(ctx.db, root)
+    body["overlaps"] = overlaps(ctx.db, root, float(ctx.config.get("scan.volume_probe_timeout_s")))
     return {"root": body, "created": created}
 
 

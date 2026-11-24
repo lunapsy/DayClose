@@ -39,21 +39,29 @@ def _state(sandbox: Sandbox) -> str:
 def test_effective_channel_elevation(marker: str) -> None:
     assert effective_channel("cli", {marker: "1"}) == "skill"
     assert effective_channel("cli", {}) == "cli"
-    assert effective_channel("app", {marker: "1"}) == "app"  # explicit app is not promoted
-    assert effective_channel("schedule", {marker: "1"}) == "schedule"
+    # A marker wins over an explicit cli/app/test; explicit agent/scheduler channels stay.
+    for requested in ("cli", "app", "test"):
+        assert effective_channel(requested, {marker: "1"}) == "skill"
+        assert effective_channel(requested, {}) == requested
+    for requested in ("skill", "mcp", "schedule"):
+        assert effective_channel(requested, {marker: "1"}) == requested
 
 
 def test_owner_only_marker_outside_sandbox_refused() -> None:
     """Pure decision function with an injected 'outside the sandbox' state: no real home."""
     env = {"CLAUDECODE": "1", "DAYCLOSE_TEST_APPROVE": "1", "DAYCLOSE_TEST_NOW": "x"}
+    for requested in ("cli", "app", "test"):
+        eff = effective_channel(requested, env)
+        for cmd, args in (
+            ("core.init", {}),
+            ("root.add", {}),
+            ("root.remove", {}),
+            ("config.set", {"key": "vault.gitleaks"}),
+        ):
+            assert owner_only_refused(cmd, args, requested, eff, sandbox_valid=False)
+            # inside a valid sandbox, marker-only elevation is exempt
+            assert not owner_only_refused(cmd, args, requested, eff, sandbox_valid=True)
     eff = effective_channel("cli", env)
-    for cmd, args in (
-        ("core.init", {}),
-        ("root.add", {}),
-        ("root.remove", {}),
-        ("config.set", {"key": "vault.gitleaks"}),
-    ):
-        assert owner_only_refused(cmd, args, "cli", eff, sandbox_valid=False)
     # Non owner-only work is unaffected.
     assert not owner_only_refused("scan.run", {}, "cli", eff, sandbox_valid=False)
     assert not owner_only_refused(
