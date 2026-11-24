@@ -991,9 +991,11 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | 기본 | DayClose | “오늘도 수고하셨습니다. 오늘 생성된 파일 {new_files}개와 수정된 파일 {modified_files}개를 검토했습니다. 정리할 항목 {items_open}개가 있습니다. 예상 검토 시간: {estimated_review_minutes}분” (FR-MI-003) | [지금 검토] [나중에] |
 | 정리할 항목 0 | — | 알림을 보내지 않는다(결정: 매일 “없음” 알림은 소음). 메뉴바만 ✓ | — |
 | 권한 문제(`W_TCC_DENIED`/`W_ROOT_UNAVAILABLE`/`E_VOLUME_TIMEOUT`) | DayClose — 확인 필요 | “예약 정리 중 일부 폴더에 접근하지 못했습니다. 전체 디스크 접근 권한을 확인해 주세요.” (기본 알림 본문 뒤에 붙이지 않고 별도 1건, 하루 1회) | [설정 열기] |
-| 보안 critical 신규 | DayClose — 보안 점검 | “새로 확인이 필요한 보안 항목이 {n}건 있습니다.” | [지금 검토] |
-| 인증서 만료 임박(`review.summary.stats.vault_expiring_soon > 0`, 리뷰 C) | — | 기본 알림 본문 끝에 한 문장 “만료가 다가오는 인증서가 {vault_expiring_soon}개 있습니다.”(이름·종류 없음) | [지금 검토] → Security Health |
-| 인증서 만료 7일 이내(`stats.vault_expiring_critical > 0`) | DayClose — 인증서 만료 | “7일 안에 만료되는 인증서가 {vault_expiring_critical}개 있습니다. 갱신이 필요합니다.” — 별도 알림, 하루 1회, 정리할 항목이 0 이어도 발송(09 §8.4) | [지금 검토] → Security Health |
+| 새 보안 자산(`stats.vault_new > 0`) | DayClose — 보안 점검 | “새로 확인이 필요한 보안 자산이 {vault_new}개 있습니다.”(이름·종류 없음) | [지금 검토] → Secure Vault |
+| 인증서 만료 임박(`review.summary.stats.vault_expiring_soon > 0`, 리뷰 C) | — | 기본 알림 본문 끝에 한 문장 “만료가 다가오는 인증서가 {vault_expiring_soon}개 있습니다(가장 가까운 것: {vault_expiring_nearest_kind 문구}, {vault_expiring_min_days}일 남음).” | [지금 검토] → Security Health |
+| 인증서 만료 7일 이내(`stats.vault_expiring_critical > 0`) | DayClose — 인증서 만료 | “{vault_expiring_nearest_kind 문구}이(가) {vault_expiring_min_days}일 뒤 만료됩니다. 7일 안에 만료되는 인증서가 모두 {vault_expiring_critical}개 있습니다.” — 별도 알림, 하루 1회, 정리할 항목이 0 이어도 발송(09 §8.4). `vault_expiring_min_days == 0` 이면 “오늘 만료됩니다” | [지금 검토] → Security Health |
+
+인증서 알림 문구 규칙(잠금 화면에 보이므로): 넣을 수 있는 것은 개수(`vault_expiring_soon`, `vault_expiring_critical`), 남은 일수(`vault_expiring_min_days`), 종류(`vault_expiring_nearest_kind` → §4.9 의 `vault_asset_kind` 한국어 문구, 예 `pkcs12` → “인증서 묶음(.p12)”, `apple_signing` → “Apple 개발자 키·서명”)뿐이다. 이름·경로·발급 대상(subject)은 넣지 않는다. 종류 값이 `null` 이거나 앱이 모르는 값이면 “인증서” 로, 남은 일수가 `null` 이면 일수 구절을 뺀다.
 | 스캔 실패 | DayClose | “오늘 결산을 만들지 못했습니다. 앱을 열어 확인해 주세요.” | [지금 검토] |
 
 - [지금 검토]: 앱 실행/활성 + 알림의 `review_date` 로 결산 화면. [나중에]: 1시간 후 같은 알림 1회 재발송(그날 최대 1회). 알림을 그냥 닫으면 재발송 없음.

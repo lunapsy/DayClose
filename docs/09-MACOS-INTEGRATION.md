@@ -515,7 +515,7 @@ main(--tick | --diagnose):
 | 권한 요청 | 앱(온보딩 ⑥ 또는 설정)에서 `UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])`. 결정: 임시 승인(`.provisional`)은 쓰지 않음 — 매일 1회 알림이 핵심 기능이라 명시 승인 |
 | 범주 `DAILY_REVIEW` | 동작 `REVIEW_NOW` “지금 검토”(`.foreground`), `LATER` “나중에”(옵션 없음) |
 | 범주 `PERMISSION` | 동작 `OPEN_SETTINGS` “설정 열기”(`.foreground`) |
-| 범주 `CERT_EXPIRY` | 동작 `REVIEW_NOW`(`.foreground`) → Security Health. 인증서 만료 알림(리뷰 C): `review.summary.stats.vault_expiring_soon > 0` 이면 일일 알림 본문 끝에 개수 한 문장, `vault_expiring_critical > 0`(7일 이내)이면 이 범주로 **별도 알림**(식별자 `cert-expiry-<YYYY-MM-DD>`, 하루 1회, 정리할 항목이 0 이어도, `scheduler.notify=false` 여도 발송). 이름·종류·경로 없음, 개수만(03 §10) |
+| 범주 `CERT_EXPIRY` | 동작 `REVIEW_NOW`(`.foreground`) → Security Health. 인증서 만료 알림(리뷰 C): `review.summary.stats.vault_expiring_soon > 0` 이면 일일 알림 본문 끝에 개수 한 문장, `vault_expiring_critical > 0`(7일 이내)이면 이 범주로 **별도 알림**(식별자 `cert-expiry-<YYYY-MM-DD>`, 하루 1회, 정리할 항목이 0 이어도, `scheduler.notify=false` 여도 발송). 본문에 쓰는 값은 `review.summary.stats` 의 `vault_expiring_soon`, `vault_expiring_critical`, `vault_expiring_min_days`(가장 가까운 만료까지 남은 일수), `vault_expiring_nearest_kind`(`vault_asset_kind` 값 — 헬퍼가 03 §4.9 의 한국어 문구로 바꿈)뿐. 이름·경로·subject 없음(잠금 화면). 문구는 03 §10 |
 | 내용 | `title`, `body` = 03 §10 문구. `threadIdentifier = "daily"`, `interruptionLevel = .active`(Time Sensitive 아님 — 엔타이틀먼트 불필요), `userInfo = ["kind": "daily", "review_date": "2026-11-24"]` — 경로·이름 금지 |
 | 식별자 | `daily-<review_date>`(같은 날 중복 발송 시 교체), `daily-<review_date>-later`, `permission-<YYYY-MM-DD>` |
 | 응답 처리 | 앱의 `UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:)`: `REVIEW_NOW`/기본 탭 → 메인 창 + `review_date`; `LATER` → `UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: false)` 로 같은 내용 1회 예약(식별자 `-later`, 이미 있으면 무시); `OPEN_SETTINGS` → 설정 > 권한 |
@@ -537,7 +537,7 @@ main(--tick | --diagnose):
 | `scheduler.dailyTime` / `scheduler.dayBoundary` | String `HH:MM` | 앱 | config 복사본 |
 | `scheduler.notify` | Bool | 앱 | false 면 `run_daily` 는 스캔·summary 만 하고 알림 생략(권한 문제 알림은 그래도 발송) |
 | `scheduler.lastTickAt`, `scheduler.lastDailyRunAt`, `scheduler.lastScanAt`, `scheduler.lastProbeAt` | Date | 헬퍼 | |
-| `scheduler.lastResult` | Dict | 헬퍼 | `at`, `kind`(daily/quiet), `ok`, `error_code`, `warning_codes[]`, `review_date`, `new_files`, `modified_files`, `items_open`, `estimated_review_minutes`, `vault_critical_new`, `vault_expiring_soon`, `vault_expiring_critical`(둘 다 `review.summary.stats` 값 그대로 — 만료 임박 / 7일 이내 인증서 수) — **경로·이름 없음** |
+| `scheduler.lastResult` | Dict | 헬퍼 | `at`, `kind`(daily/quiet), `ok`, `error_code`, `warning_codes[]`, `review_date`, `new_files`, `modified_files`, `items_open`, `estimated_review_minutes`, `vault_new`, `vault_expiring_soon`, `vault_expiring_critical`, `vault_expiring_min_days`, `vault_expiring_nearest_kind`(넷 다 `review.summary.stats` 값 그대로 — 만료 임박 수 / 7일 이내 수 / 가장 가까운 만료까지 일수 또는 null / 그 자산의 `vault_asset_kind` 값 또는 null) — **경로·이름·subject 없음** |
 | `scheduler.lastProbe` | Dict | 헬퍼 | `at`, `fda`(granted/denied/unknown — 헬퍼 프로세스 자신의 Swift 프로브, launchd 맥락), `root_warnings`: `[{"root_id","code"}]`(그 스캔의 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE`) — 경로 없음 |
 
 두 기기(02 §8.1): `UserDefaults`·SMAppService 등록·알림 권한은 Mac 마다 따로 있고 동기화하지 않는다(iCloud 키-값 동기화 사용 안 함). 각 Mac 의 `config.toml` 시각이 그 Mac 의 스케줄을 정한다. 무인으로 도는 Mac mini 는 알림을 볼 사람이 없을 수 있으므로 설정 > 알림·예약에서 “알림 없이 스캔만” 을 고를 수 있다(앱 키 `scheduler.notify`, 기본 켬 — 결정: PRD O1 의 무인 기기 알림 방식이 확정될 때까지의 최소 선택지).
