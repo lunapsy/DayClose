@@ -1,0 +1,56 @@
+# OMC / agent runtime state
+.omc/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# DayClose local state (never commit real DBs or configs)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+config.toml
+state.lock
+!core/tests/fixtures/db/*.db
+
+# Secrets safety net (test fixtures are generated at runtime, never committed)
+*.p12
+*.pfx
+*.p8
+*.key
+*.pem
+*.mobileprovision
+*.jks
+*.keystore
+.env
+.env.*
+
+# Logs / scratch
+*.log
+/tmp/
