@@ -6,6 +6,8 @@ DayClose 는 macOS 용 Digital Housekeeping Agent 입니다. 매일 하루 동�
 
 원칙: Local-first · AI optional · Human-in-the-loop · Reversible · Incremental · Privacy-first · Agent-ready.
 
+라이선스: MIT (`LICENSE`). 개인 로컬 빌드용이며 Developer ID 서명·공증 배포는 하지 않습니다.
+
 ## 상태
 
 M0 — 명세 작성 단계. 아직 실행 가능한 코드는 없습니다. 다음 마일스톤은 M1(Python core 골격 + 파일 스냅샷·변경 감지 CLI). 진행 순서는 `docs/12-IMPLEMENTATION-ROADMAP.md`.
@@ -31,11 +33,11 @@ uv run dayclose review summary --json     # M2~
 |---|---|
 | `CONTEXT.md` | 요구사항 원천 (기획 대화 원문) |
 | `AGENTS.md` | 코딩 에이전트 작업 규칙·안전 규칙·완료 정의 |
-| `docs/01-PRD.md` | 제품 정의, 페르소나, 기능 요구사항(FR-*), MVP, 미결 사항 |
+| `docs/01-PRD.md` | 제품 정의, 페르소나, 기능 요구사항(FR-*), MVP, 확정·미결 사항 |
 | `docs/02-ARCHITECTURE.md` | 모듈 구조, CLI/JSON 계약, 오류 모델, 경로, 공유 계약 |
 | `docs/03-UI-UX-SPEC.md` | 앱 화면·상호작용·단축키 |
 | `docs/04-FILE-INTELLIGENCE.md` | 변경 감지, 분류, 그룹, 중복, 프로젝트 매칭 |
-| `docs/05-SECURE-VAULT.md` | 보안 자산 탐지·마스킹·건강 점검·암호화 백업 |
+| `docs/05-SECURE-VAULT.md` | 보안 자산 탐지·마스킹·건강 점검 |
 | `docs/06-DATA-MODEL.md` | SQLite 스키마, enum, 상태 기계, 마이그레이션 |
 | `docs/07-AI-MEMORY-POLICY.md` | 선호 학습, AI 공급자, 전송 게이트 |
 | `docs/08-SAFE-EXECUTION.md` | 계획·승인·실행·undo·복구 |

@@ -13,6 +13,7 @@
 - enum: `TEXT` + `CHECK (x IN (...))`. 값 추가는 마이그레이션으로(테이블 재작성 필요 → §7).
 - JSON 컬럼은 이름이 `*_json`, `CHECK (json_valid(x))`.
 - 민감 필드는 이름이 `*_enc`, `BLOB`(§6). 평문 컬럼에 같은 내용 저장 금지.
+- 단일 기기 설계: DB 하나 = 기기 하나. `app_meta.device_id` 와 봉투 `meta.device_id` 는 유지하되 기기 간 병합·동기화 구조는 없다(Mac mini 사용 여부는 PRD 미결).
 - 경로는 `os.fsdecode()` 결과 그대로(정규화하지 않음). 파일 동일성 판단은 경로가 아니라 `(dev, inode)` 가 1순위.
 
 ## 2. 엔티티 개요
@@ -29,14 +30,15 @@ review_sessions ─< review_groups ─< review_items >────┘
                                       │  └── suppressions (keep_always)
                                       ▼
                          plans ─< plan_operations, approvals
-protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), archive_*(M8), audit_log, app_meta
+protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, app_meta
+(archive_targets/archive_records 는 2026-11-24 삭제 — 보관 폴더는 config `archive.root` 하나)
 ```
 
 ## 3. Enum 정의
 
 | enum | 값 (순서 의미 있음 표시 ★) |
 |---|---|
-| `scan_root_kind` | `downloads`, `desktop`, `screenshots`, `documents`, `projects`, `vault_extra`, `custom` |
+| `scan_root_kind` | `downloads`, `desktop`, `screenshots`, `documents`, `icloud_drive`, `projects`, `vault_extra`, `custom` |
 | `run_status` | `running`, `completed`, `partial`, `failed`, `interrupted` |
 | `run_trigger` | `init`, `manual`, `app`, `schedule`, `agent` |
 | `entry_kind` | `file`, `dir`, `symlink`, `package` (`.app` 등 번들 디렉터리를 한 항목으로) |
@@ -80,7 +82,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), archive_*(M8
 
 | sensitivity | preview_policy | ai_policy | 판정 근거(04/05/07 문서가 세부 확정) |
 |---|---|---|---|
-| `normal` | `full` | `external_ok` (단 `ai.allow_external=false` 면 `local_only`) | 기본값 |
+| `normal` | `full` | `external_ok` (단 `ai.allow_external=false` 면 `local_only`. 외부 공급자는 소유자 허용, 옵트인) | 기본값 |
 | `personal` | `full` | `local_only` | 개인 문서·사진, 스크린샷(OCR 전 기본값) |
 | `patient` | `ephemeral` | `none` | `patient_data` 보호 판정 |
 | `secret` | `metadata_only` | `none` | `security_asset` 판정, gitleaks 적중 |
@@ -225,7 +227,7 @@ CREATE TABLE schema_migrations (
 CREATE TABLE scan_roots (
   id          INTEGER PRIMARY KEY,
   path        TEXT NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('downloads','desktop','screenshots','documents','projects','vault_extra','custom')),
+  kind        TEXT NOT NULL CHECK (kind IN ('downloads','desktop','screenshots','documents','icloud_drive','projects','vault_extra','custom')),
   enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
   max_depth   INTEGER,                 -- NULL = 무제한. projects 기본 2 (저장소 탐지용)
   file_level  INTEGER NOT NULL DEFAULT 1 CHECK (file_level IN (0,1)), -- 0 = 파일 단위 항목 생성 안 함 (projects)
@@ -261,7 +263,7 @@ CREATE TABLE file_entries (
   dev             INTEGER NOT NULL,
   inode           INTEGER NOT NULL,
   mode            INTEGER NOT NULL,    -- st_mode
-  flags           INTEGER NOT NULL DEFAULT 0, -- st_flags (SF_DATALESS 등)
+  flags           INTEGER NOT NULL DEFAULT 0, -- st_flags. SF_DATALESS(0x40000000) = iCloud 미다운로드 → 내용 접근 금지 (02 §10.6)
   sha256          TEXT,                -- 지연 계산. hash_max_bytes 초과/dataless 는 NULL
   sha256_mtime_ns INTEGER,             -- sha256 계산 당시 mtime (무효화 판단)
   where_from_host TEXT,                -- kMDItemWhereFroms 의 호스트만 (전체 URL 저장 금지)
@@ -370,7 +372,7 @@ CREATE TABLE review_items (
   login_item_id      INTEGER,          -- 0003 inventory_login_items.id
   vault_asset_id     INTEGER,          -- 0003 vault_assets.id
   subject_path       TEXT,             -- 탐지/최근 이동 시점 경로 스냅샷 (표시·stale 판단용)
-  origin_root_kind   TEXT CHECK (origin_root_kind IN ('downloads','desktop','screenshots','documents','projects','vault_extra','custom')),
+  origin_root_kind   TEXT CHECK (origin_root_kind IN ('downloads','desktop','screenshots','documents','icloud_drive','projects','vault_extra','custom')),
   category           TEXT NOT NULL CHECK (category IN ('screenshot','image','document','installer','compressed','media','code','folder','misc','dev_cache','security_asset','app','package','git_repo','login_item')),
   state              TEXT NOT NULL CHECK (state IN ('detected','proposed','decided','planned','executed','undone','failed','stale','suppressed')),
   protection         TEXT NOT NULL DEFAULT 'none' CHECK (protection IN ('none','user_rule','system','active_repo','patient_data','security_asset')),
@@ -417,7 +419,7 @@ CREATE TABLE decisions (
   id           INTEGER PRIMARY KEY,
   item_id      INTEGER NOT NULL REFERENCES review_items(id),
   action       TEXT NOT NULL CHECK (action IN ('keep','keep_always','trash','move','archive','defer','acknowledge')),
-  dest_path    TEXT,                   -- move 필수, archive 는 대상 ID 를 dest_path='archive:<target_id>' 로
+  dest_path    TEXT,                   -- move 필수. archive 는 NULL (plan.create 가 config archive.root 기준으로 목적지 결정)
   defer_until  TEXT,
   note_enc     BLOB,                   -- 사용자 메모 (암호화, §6)
   actor        TEXT NOT NULL DEFAULT 'user' CHECK (actor IN ('user','rule')),
@@ -449,7 +451,7 @@ CREATE TABLE protection_rules (
 ) STRICT;
 -- builtin 시드: ('path_prefix','/System','system'), ('path_prefix','/Library','system'),
 --   ('glob','/Applications/*.app/**','system'), ('path_prefix','~/.ssh','security_asset') 등 — 04/05 문서가 확정.
--- config 소스: config.toml [protection] 값을 로드 시 동기화 (patient_paths → path_prefix/patient_data).
+-- config 소스: config.toml [protection].patient_filename_patterns 를 로드 시 glob/patient_data 규칙으로 동기화. (환자 폴더 설정은 없음 — 2026-11-24)
 -- builtin 규칙은 비활성화할 수 없다(enabled 변경 시 E_PROTECTED).
 
 CREATE TABLE suppressions (
@@ -675,35 +677,6 @@ CREATE TABLE ai_requests (
 CREATE INDEX ix_ai_requests_ts ON ai_requests(ts);
 ```
 
-### 5.6 `0006_archive.sql` (M8 — 05·10 문서가 컬럼을 확정할 수 있음)
-
-```sql
-CREATE TABLE archive_targets (
-  id            INTEGER PRIMARY KEY,
-  name          TEXT NOT NULL UNIQUE,
-  kind          TEXT NOT NULL CHECK (kind IN ('local_path','smb_mount')),
-  base_path     TEXT NOT NULL,          -- 예 '/Volumes/External/DayCloseArchive', '/Volumes/pharmacy-nas/DayClose'
-  encryption    TEXT NOT NULL CHECK (encryption IN ('none','age')),
-  recipient_fingerprint TEXT,           -- age 공개키 지문
-  allow_sensitivity TEXT NOT NULL DEFAULT 'personal' CHECK (allow_sensitivity IN ('normal','personal','patient','secret')),
-  enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-  created_at    INTEGER NOT NULL
-) STRICT;
--- 규칙: sensitivity >= patient 인 항목은 encryption='age' 대상에만 archive 가능. secret 은 M8 vault 백업 절차로만.
-
-CREATE TABLE archive_records (
-  id            INTEGER PRIMARY KEY,
-  op_id         INTEGER NOT NULL REFERENCES plan_operations(id),
-  target_id     INTEGER NOT NULL REFERENCES archive_targets(id),
-  remote_path   TEXT NOT NULL,
-  encrypted     INTEGER NOT NULL CHECK (encrypted IN (0,1)),
-  size_bytes    INTEGER NOT NULL,
-  sha256_plain  TEXT NOT NULL,
-  verified_at   INTEGER,               -- 복원 검증 성공 시각
-  verify_method TEXT CHECK (verify_method IN ('hash_readback','decrypt_roundtrip'))
-) STRICT;
-```
-
 ## 6. 민감 필드와 보호
 
 | 컬럼 | 내용 | 보호 |
@@ -711,7 +684,7 @@ CREATE TABLE archive_records (
 | `decisions.note_enc` | 사용자 메모 | AES-256-GCM |
 | `vault_assets.cert_subject_enc` | 인증서 subject (NPKI 는 실명 포함) | AES-256-GCM |
 | `vault_assets.user_label_enc`, `user_note_enc` | 사용자 입력 | AES-256-GCM |
-| `file_text.text_enc` | OCR/문서 텍스트 (환자 정보·비밀 포함 가능) | AES-256-GCM |
+| `file_text.text_enc` | OCR/문서 텍스트 (환자 정보·비밀 포함 가능). dataless 파일은 추출하지 않음 | AES-256-GCM |
 | `vault_findings.rule_id/line_no` | 위치 정보만 | 평문 허용 (매치 문자열 저장 금지) |
 | `file_entries.where_from_host` | 다운로드 출처 호스트 | 평문 허용 (전체 URL·쿼리 저장 금지) |
 | 경로 컬럼 전반 | 파일 경로 | 평문 (DB 파일 0600 + FileVault 전제). 로그에는 보안/환자 항목 경로 금지 |

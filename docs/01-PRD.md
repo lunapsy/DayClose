@@ -17,10 +17,10 @@ DayClose 는 macOS 용 **Digital Housekeeping Agent** 다. 디스크 청소기�
 ## 2. 페르소나
 
 **P1 — 주 사용자 (소유자 본인)**: 약국을 운영하는 약사이자 1인 개발자.
-- 기기: MacBook Pro(주 작업), Mac mini(상시 가동 서버 역할, docker 컨테이너 다수), 약국의 Synology NAS.
+- 기기: MacBook Pro(주 작업), Mac mini(상시 가동 서버 역할, docker 컨테이너 다수), 약국의 Synology NAS(DayClose 범위 밖 — §9 C6). DayClose 는 단일 기기 기준으로 설계.
 - 작업: 여러 개발 프로젝트(`~/dev/*`)를 동시에 진행, Claude Code·Codex 를 많이 사용 → 스크린샷·다운로드·임시 문서·설치 파일이 매일 쌓인다.
 - 보유 자산: Apple Developer 키(`.p8`, `.p12`, `.mobileprovision`), Android keystore, SSH 키, `.env`, 클라우드 서비스 계정 키, 공동인증서(NPKI).
-- 민감 자료: 약국·환자 관련 자료(처방·조제 관련 문서, 스크린샷). 외부 전송 절대 금지.
+- 민감 자료: 약국·환자 관련 자료(처방·조제 관련 문서, 스크린샷). 이 Mac 에 전용 폴더는 없지만 섞여 들어올 수 있으므로 기본 패턴으로 탐지. 외부 전송 절대 금지.
 - 제약: 내장 SSD 245GB 가 자주 가득 참. 외장 SSD(`/Volumes/External`) 상시 연결. launchd 프로세스의 `/Volumes` 접근은 FDA 없으면 멈춤.
 - 기대: 매일 저녁 1분 투자, 실수로 중요한 것을 지우지 않는다는 확신, 터미널/에이전트에서도 호출 가능.
 
@@ -34,8 +34,8 @@ DayClose 는 macOS 용 **Digital Housekeeping Agent** 다. 디스크 청소기�
 | Smart Organizer | 파일·프로젝트 문맥별 정리 제안 | M2(휴리스틱), M6(AI) |
 | Visual Review | 이미지·문서 미리보기 및 개별 판단 | M4 |
 | App Manager | 앱·Homebrew·개발 환경·로그인 항목 점검 | M3(읽기 전용) |
-| Secure Vault | 키·인증서·보안 자산 탐지·인벤토리·건강 점검 | M3(읽기 전용), M8(암호화 백업) |
-| Archive & Backup | NAS/외장 보관, 암호화 백업, 복구 검증 | M5(로컬/외장 대상), M8(NAS) |
+| Secure Vault | 키·인증서·보안 자산 탐지·인벤토리·건강 점검 | M3(읽기 전용) |
+| Archive | 로컬/외장 보관 폴더로의 `archive` (NAS·원격 백업은 비목표) | M5 |
 | 공통: Personal Policy & Memory Engine | 보호 정책, 사용자 선호, 프로젝트 문맥, 규칙, 판단 이력 | M2(보호·suppression), M6(학습) |
 | 공통: Safe Execution | 승인된 계획만 실행, 휴지통, 이동, undo | M5 (설계·가드는 M1부터) |
 
@@ -55,8 +55,8 @@ Local-first · AI optional · Human-in-the-loop · Reversible · Incremental · 
 **FR-CORE-001 — 초기화.** `dayclose init` 이 상태 디렉터리·DB·설정을 만든다(필드 암호화 키는 M2 부터 함께 생성).
 AC: 두 번 실행해도 결과 동일(멱등), 기존 데이터 보존. `DAYCLOSE_HOME` 권한 0700, DB 0600. M1.
 
-**FR-CORE-002 — 기본 스캔 루트.** init 시 `~/Downloads`(downloads), `~/Desktop`(desktop), 스크린샷 저장 위치(`defaults read com.apple.screencapture location`, Desktop 과 다를 때만, screenshots), `~/Documents`(documents), `~/dev`(projects, 파일 단위 항목 없음)를 등록한다. `--no-default-roots` 로 생략.
-AC: 존재하지 않는 경로는 등록하지 않고 경고. `root add/remove/list` 동작. M1.
+**FR-CORE-002 — 기본 스캔 루트.** init 시 `~/Downloads`(downloads), `~/Desktop`(desktop), 스크린샷 저장 위치(`defaults read com.apple.screencapture location`, Desktop 과 다를 때만, screenshots), `~/Documents`(documents), iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs`(icloud_drive), `~/dev`(projects, 파일 단위 항목 없음)를 등록한다. `--no-default-roots` 로 생략.
+AC: 존재하지 않는 경로는 등록하지 않고 경고. `root add/remove/list` 동작. 겹치는 루트(데스크탑·문서 iCloud 동기화)에서 같은 파일이 두 번 기록되지 않음. M1.
 
 **FR-CORE-003 — 증분 변경 감지.** `scan run` 은 직전 상태와 비교해 생성·수정·삭제·이동을 기록한다. 이동은 (dev, inode) 일치로 판정한다.
 AC: 샌드박스에서 파일 생성/수정/삭제/이름변경 각각이 정확히 1개 이벤트로 기록. 변경 없는 재스캔은 이벤트 0. 패키지(`.app` 등)는 하나의 항목. 제외 규칙(`.DS_Store`, `node_modules`, `.git` 내부) 적용. M1.
@@ -67,8 +67,11 @@ AC: 계약 테스트가 모든 명령의 성공/실패 봉투를 `contracts/enve
 **FR-CORE-005 — 환경 진단.** `dayclose doctor` 가 외부 도구 유무, 루트별 접근성(`ok|tcc_denied|timeout|missing`), DB 무결성·권한을 보고한다.
 AC: TCC 거부(EPERM)와 일반 권한 오류를 구분. M1.
 
-**FR-CORE-006 — 멈추지 않는 스캔.** `/Volumes/*` 아래 경로는 시간 제한 프로브 후 접근하며, 시간 초과 시 그 루트를 건너뛰고 경고한다. iCloud dataless 파일은 내용을 읽지 않는다.
-AC: 프로브가 응답하지 않는 모의 경로에서 `scan run` 이 `volume_probe_timeout_s`+2초 안에 `W_ROOT_UNAVAILABLE` 로 끝남. dataless 플래그 파일은 해시 계산 안 함. M1.
+**FR-CORE-006 — 멈추지 않는 스캔.** `/Volumes/*` 아래 경로는 시간 제한 프로브 후 접근하며, 시간 초과 시 그 루트를 건너뛰고 경고한다.
+AC: 프로브가 응답하지 않는 모의 경로에서 `scan run` 이 `volume_probe_timeout_s`+2초 안에 `W_ROOT_UNAVAILABLE` 로 끝남. M1.
+
+**FR-CORE-008 — iCloud 자리표시자 보존.** 스캔·vault·OCR·미리보기 어느 단계도 미다운로드(dataless, `.icloud` 자리표시자) 파일을 다운로드시키지 않는다(02 §10.6). 이런 파일과 iCloud Drive 항목에는 `trash/move/archive` 를 제공하지 않는다.
+AC: `SF_DATALESS` 플래그를 흉내 낸 픽스처(플래그 판정 함수 주입)에 대해 open/read 호출 0(감시 래퍼로 검증), sha256 NULL, `W_DATALESS_SKIPPED` 집계, `allowed_actions` 에 trash/move/archive 없음. M1(스캔), M3(vault), M4(미리보기).
 
 **FR-CORE-007 — 쓰기 직렬화.** 쓰기 명령 동시 실행 시 하나만 진행, 나머지는 대기 후 `E_LOCKED`.
 AC: 동시 `scan run` 2개 → 하나 성공, 하나 `E_LOCKED`(대기 0초 설정 시). M1.
@@ -193,8 +196,7 @@ AC: `tracked_in_git` 발견 사항 문구에 폐기·재발급 권고 포함, �
 **FR-SV-008 — 시드 구문 비수집.** 암호화폐 시드·복구 구문 의심 파일은 존재·위치만 경고하고 지문·내용 등 어떤 파생값도 저장하지 않는다.
 AC: 시드 의심 픽스처 → `crypto_seed_suspected`, `fingerprint_sha256` NULL, 로그에 경로 없음. M3.
 
-**FR-SV-009 — 암호화 백업(후속).** 보안 자산을 클라이언트 측 암호화 후에만 NAS 로 백업, 복구 가능성 검증. 평문 복사 금지.
-AC: 05 문서가 확정. M8.
+**FR-SV-009 — (삭제 2026-11-24)** NAS 암호화 백업은 비목표로 이동(§7). ID 는 재사용하지 않는다. 보안 자산의 `backup_status` 는 사용자 표시로만 갱신(§9 O2).
 
 ### 5.7 Safe Execution (FR-EX) — 세부는 08 문서
 
@@ -224,16 +226,16 @@ AC: `audit list` 로 누가(channel) 무엇을 언제 했는지 확인 가능, �
 **FR-PM-001 — 기본 보호.** 활성 git 저장소, 보안 자산, 환자 관련 자료, 시스템 경로는 기본 보호(02 §10.1).
 AC: 보호 등급별 허용 동작 매트릭스 테스트. M2.
 
-**FR-PM-002 — 환자 자료 판정.** `protection.patient_paths` 아래 파일, 파일명 패턴, 로컬 텍스트의 주민등록번호 패턴으로 `patient_data` 판정. 외부 모델·로그·썸네일 캐시 금지, 휴지통 금지, 그룹 결정 제외.
+**FR-PM-002 — 환자 자료 판정.** 기본 패턴만 사용: 파일명 패턴(`protection.patient_filename_patterns`)과 로컬 텍스트의 주민등록번호 패턴으로 `patient_data` 판정. 전용 폴더 설정·추가 식별 기법은 두지 않는다(§9 C2). 필요 시 일반 보호 규칙으로 경로 추가(FR-PM-003). 외부 모델·로그·썸네일 캐시 금지, 휴지통 금지, 그룹 결정 제외.
 AC: 패턴 일치 파일 → `sensitivity=patient`, `allowed_actions` 에 `trash` 없음. M2.
 
 **FR-PM-003 — 사용자 보호 규칙.** 경로·글롭·확장자·프로젝트 단위 보호 규칙 추가/삭제. 내장 규칙은 비활성화 불가.
-AC: `rule add --kind path_prefix --pattern ~/약국 --protection patient_data` 후 해당 파일 보호. M2.
+AC: `rule add --kind path_prefix --pattern <샌드박스 경로> --protection user_rule` 후 해당 파일의 `allowed_actions` 가 보호 등급 표와 일치. M2.
 
 **FR-PM-004 — 결정 학습 제안.** 같은 조건에서 같은 결정을 반복하면 규칙 등록을 제안한다(1일차: 묻기 → 약 1주: “기본 규칙으로 등록할까요?” → 약 1개월: 습관 항목은 하나로 묶고 새 판단만 강조).
 AC: 같은 조건의 `trash` 결정 5회(07 문서가 임계값 확정) → `policy_rules.state=suggested`. 수락 후 규칙 일치 항목은 제안이 자동 채워지되 **실행은 여전히 계획 승인 필요**. M6.
 
-**FR-PM-005 — AI 전송 게이트.** AI 로 보내는 모든 페이로드는 게이트를 통과해야 하며, `ai_policy=none` 항목·비밀 패턴·환자 패턴을 제거한다. 요청은 메타데이터 감사 기록만 남긴다.
+**FR-PM-005 — AI 전송 게이트.** 외부 공급자(anthropic/openai) 사용은 허용되나 옵트인: `ai.enabled=true` + `ai.allow_external=true` + Keychain 키가 모두 있어야 하며, 기본은 꺼짐. AI 로 보내는 모든 페이로드는 게이트를 통과해야 하며, `ai_policy=none` 항목·비밀 패턴·환자 패턴을 제거한다. 요청은 메타데이터 감사 기록만 남긴다.
 AC: 게이트 단위 테스트(비밀/환자 픽스처 포함 입력 → 페이로드에 없음). M6.
 
 ### 5.9 macOS 통합 (FR-MI) — 세부는 09 문서
@@ -244,11 +246,12 @@ AC: 게이트 단위 테스트(비밀/환자 픽스처 포함 입력 → 페이�
 **FR-MI-004 — 권한 안내.** FDA 미부여로 예약 실행이 루트에 접근 못 하면 알림·앱에서 설정 경로를 안내(시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한). 예약 실행은 절대 멈추지 않고 경고로 끝난다.
 AC(공통): launchd 실행과 셸 실행 결과 비교 테스트 절차(09 문서) 통과. M7.
 
-### 5.10 Archive & Backup (FR-AB)
+### 5.10 Archive (FR-AB)
 
-**FR-AB-001 — 보관 대상.** 로컬/외장 경로(예 `/Volumes/External/DayCloseArchive`)를 보관 대상으로 등록하고 `archive` 결정의 목적지로 사용. M5.
-**FR-AB-002 — NAS 보관.** Synology NAS(SMB 마운트) 대상, 연/월 구조 보관, 보관 후 검증. M8.
-**FR-AB-003 — 암호화 보관.** `patient` 이상 민감도 항목은 클라이언트 측 암호화 대상에만 보관 가능. 복구 검증(왕복 복호화) 필수. M8.
+**FR-AB-001 — 보관 폴더.** `config.archive.root`(로컬 또는 외장, 예 `/Volumes/External/DayCloseArchive`) 하나를 `archive` 결정의 목적지로 쓴다. 배치 `<root>/<YYYY>/<MM>/<원래 이름>`. 외장 경로는 프로브 경유, 볼륨 간이면 복사→검증→원본 제거. undo 는 원위치 이동.
+AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상태에서 apply → `E_VOLUME_UNAVAILABLE`, 원본 보존. M5.
+**FR-AB-002 — (삭제 2026-11-24)** NAS 보관 → 비목표.
+**FR-AB-003 — (삭제 2026-11-24)** 원격 암호화 보관 → 비목표.
 
 ### 5.11 Agent 연동 (FR-AG) — 세부는 10 문서
 
@@ -267,7 +270,7 @@ AC(공통): launchd 실행과 셸 실행 결과 비교 테스트 절차(09 문�
 | NFR-SAFE-001 | 무승인 변경 0 | 안전 회귀 스위트 100% 통과가 모든 머지 조건 |
 | NFR-SAFE-002 | 크래시 안전 | 어느 시점의 강제 종료에도 파일 유실 0 |
 | NFR-PRIV-001 | 비밀 누출 0 | 로그·DB·stdout·AI 페이로드·썸네일에 비밀/환자 원문 0 |
-| NFR-PRIV-002 | 네트워크 | AI·NAS 기능 비활성 시 외부 네트워크 연결 0 |
+| NFR-PRIV-002 | 네트워크 | AI 비활성 시 외부 네트워크 연결 0 (AI 외에는 네트워크를 쓰는 기능이 없음) |
 | NFR-REL-001 | 멈춤 없음 | 예약 실행은 어떤 권한 상태에서도 제한 시간 내 종료 |
 | NFR-A11Y-001 | 접근성 | 앱 전 기능 키보드 조작, VoiceOver 레이블 |
 | NFR-L10N-001 | 언어 | 사용자 문구 한국어 기본 |
@@ -280,7 +283,9 @@ AC(공통): launchd 실행과 셸 실행 결과 비교 테스트 절차(09 문�
 - 보안 자산의 일괄 이동·중앙 폴더 집결, 비밀값 자체의 보관(비밀번호 관리자 역할), 시드 구문 보관.
 - 파일 내용 편집·변환.
 - 브라우저 북마크·노트·사진 보관함 정리(CONTEXT 에서 요구되지 않음).
-- 기기 간 DB 동기화. 각 기기는 독립 DB(통합 리포트는 M8 이후 검토).
+- 기기 간 DB 동기화·통합 리포트. 단일 기기 설계(다른 기기에서 쓰면 각자 독립 DB).
+- **NAS·SMB·원격 보관, 원격/암호화 백업 업로드(age 포함)** — 2026-11-24 소유자 결정으로 범위 제외(“나중”이 아님). 보관은 로컬/외장 폴더만.
+- 유료화·계정·텔레메트리.
 - 클라우드 계정·서버 백엔드, 다중 사용자.
 - MVP 의 실시간 감시(FSEvents 상주). 예약 스캔으로 충분 — M7 이후 필요 시.
 
@@ -291,16 +296,26 @@ AC(공통): launchd 실행과 셸 실행 결과 비교 테스트 절차(09 문�
 - MVP 에서 파일은 **한 개도** 바뀌지 않는다. 결정은 기록되고 계획 대기로 남는다.
 - 실행 엔진은 MVP 직후 M5(“이후 안전한 파일 이동과 복구 기능을 붙이는 순서”). 단 executor 전용 변경 규칙, 샌드박스 가드, 보호 정책은 M1~M2 부터 코드와 테스트로 존재(턴4).
 
-이후: M5 실행(FR-EX, FR-AB-001, FR-VR-007) → M6 AI·학습(FR-SO-005/006, FR-PM-004/005) → M7 메뉴바·자동실행·알림(FR-MI) → M8 Skill·MCP·NAS(FR-AG-002/003, FR-AB-002/003, FR-SV-009).
+이후: M5 실행(FR-EX, FR-AB-001, FR-VR-007) → M6 AI·학습(FR-SO-005/006, FR-PM-004/005) → M7 메뉴바·자동실행·알림(FR-MI) → M8 Skill·MCP(FR-AG-002/003).
 
-## 9. 미결 사항 (소유자 확인 필요)
+## 9. 확정 사항과 미결 사항
 
-1. **환자 자료 위치·식별 기준**: 약국 PM 프로그램 내보내기 폴더, 처방전 스캔 위치 등 `protection.patient_paths` 에 넣을 경로. 기본값은 파일명 패턴(`*처방*`, `*조제*`, `*환자*`) + 주민등록번호 패턴뿐이다.
-2. **`.p6` 의 실체**: `.p12`/`.pfx`/`.p8` 중 무엇을 뜻했는지, 혹은 다른 형식인지.
-3. **Mac mini 운용**: Mac mini 에서도 일일 결산을 쓸지, 쓴다면 루트(서버 데이터·docker 볼륨은 제외 권장)와 알림 방식(무인 기기).
-4. **NAS 연결**: Synology 접근 방식(SMB 마운트 경로, 상시 마운트 여부), 보관 폴더 구조, 암호화 백업 키(age 개인키)를 어디에 보관할지(예: 종이/오프라인 + Keychain).
-5. **AI 사용**: 외부 AI(Claude API 등) 사용 의향과 키 보유 여부, 또는 로컬 ollama 모델만 쓸지. 기본값은 AI 꺼짐.
-6. **`~/Documents`·iCloud Drive 범위**: Documents 를 스캔할지, iCloud Drive 를 포함할지(dataless 파일은 내용 미열람).
-7. **일일 시각·날짜 경계**: 알림 21:00, 날짜 경계 04:00 이 맞는지.
-8. **배포·서명**: Developer ID 서명·공증을 할지(FDA 권한 유지 안정성에 영향), 오픈소스 공개 여부와 라이선스(13 문서의 재사용 판단에 영향).
-9. **보안 자산 백업 상태 판정**: “백업됨”을 무엇으로 볼지(NAS 암호화 사본 존재, Keychain 존재, 사용자가 표시) — 05 문서 초안은 사용자 표시 + M8 암호화 사본 검증.
+### 9.1 확정 사항 (2026-11-24, 소유자 답변 + 총괄 결정)
+
+| # | 질문 | 확정 내용 | 반영 위치 |
+|---|---|---|---|
+| C1 | `.p6` 의 실체 | 특정 형식이 아니라 “중요한 키 파일 전반”을 뜻함. Vault 는 CONTEXT 턴2 자산 표 전체를 다루며 `.p6` 별도 처리 없음 | FR-SV-001 |
+| C2 | 환자 자료 위치·식별 | 이 Mac 에 환자 자료 전용 폴더 없음. `patient_data` 보호 등급은 유지하되 판정은 기본 패턴(파일명 + 주민등록번호)만. 폴더 설정(`patient_paths`)과 추가 식별 장치는 만들지 않음 | FR-PM-002, 02 §9 |
+| C3 | AI 사용 | 외부 공급자 허용. 단 옵트인(키 설정 전까지 꺼짐), sensitivity 게이트 불변 — patient/secret 은 어떤 모델에도 안 보냄 | FR-PM-005, 02 §9, 06 §3.1 |
+| C4 | `~/Documents`·iCloud Drive | 둘 다 기본 스캔 루트. 미다운로드 자리표시자는 스캔이 절대 다운로드시키지 않음 | FR-CORE-002, FR-CORE-008, 02 §10.6 |
+| C5 | 일일 시각·날짜 경계 | 알림 21:00, 날짜 경계 04:00 확정 | FR-DR-002, FR-MI-002 |
+| C6 | NAS 연결 | 필요 없음. Synology NAS·SMB·원격 암호화 백업은 **비목표**. `archive` 동작은 로컬/외장 보관 폴더로 유지. age 키 보관 질문은 소멸 | §7, FR-AB-*, FR-SV-009, 02·06 |
+| C7 | 공개·라이선스 | 유료화 계획 없음. **MIT 라이선스**(`LICENSE`, © 2026 Lunap Lee), 공개 저장소 `lunapsy/DayClose`. 결과: GPL/AGPL 코드는 복사 불가, 외부 도구로 호출만 | 02 §3, AGENTS.md, 13 |
+| C8 | 서명·공증 | Developer ID 서명·공증 안 함(개인 로컬 빌드). 결과: 재빌드 시 FDA 승인이 풀릴 수 있음 → 고정된 로컬 서명 인증서로 서명, M7 에서 재빌드 후 FDA 유지 실기기 검증 | 02 §4, 12 M7 |
+
+### 9.2 미결 사항 (소유자 확인 필요)
+
+| # | 질문 | 현재 기본값 |
+|---|---|---|
+| O1 | Mac mini 에서도 DayClose 를 쓸지, 쓴다면 스캔 루트(서버 데이터·docker 볼륨 제외 권장)와 무인 기기 알림 방식 | 단일 기기 설계, `device_id` 는 모델에 유지 |
+| O2 | 보안 자산을 “백업됨”으로 볼 기준 | 사용자가 `vault annotate` 로 표시한 경우만 `verified`, 그 외 `unknown`. NAS 사본 검증은 비목표로 제외됨 |

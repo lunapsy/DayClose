@@ -10,7 +10,7 @@
 | 3단계 개별·일괄 승인, 안전한 파일 이동, 휴지통, 복구 | M5 |
 | 4단계 AI 문맥 분류, 사용자 선호도 학습 | M6 |
 | 5단계 메뉴바, 자동 실행, 일일 정리 알림 | M7 |
-| 6단계 Claude·Codex Skill, MCP, NAS 연동 | M8 |
+| 6단계 Claude·Codex Skill, MCP (NAS 연동은 2026-11-24 비목표로 제외) | M8 |
 
 공통 종료 기준(모든 마일스톤): `AGENTS.md` 의 완료 정의(DoD) 충족 — 테스트 녹색, 안전 회귀 스위트 통과, 실제 사용자 파일 미접촉, 명세와 구현 불일치 시 명세 먼저 수정.
 
@@ -32,7 +32,7 @@
 2. `dayclose/common/`: `errors.py`(02 §11 계층·코드), `envelope.py`(02 §5.4), `ids.py`(접두사 변환), `clock.py`(주입 가능한 시계), `paths.py`(`DAYCLOSE_HOME` 해석, `probe(path, timeout)`), `logging.py`(JSON Lines + `RedactingFilter` 기본 패턴), `proc.py`(`run_tool`, 허용 목록·타임아웃).
 3. `dayclose/config/`: 기본값, `config.toml` 로드/저장, `config get/set/list`.
 4. `dayclose/store/`: 연결(PRAGMA), 마이그레이션 러너(체크섬·백업·user_version), `migrations/0001_core.sql`(06 §5.1 그대로).
-5. `dayclose/collect/fs.py`: 루트별 `os.scandir` 워커, 제외 글롭, 패키지 디렉터리 처리, dataless 건너뛰기, (dev,inode,size,mtime_ns) 비교 → `file_entries` 갱신 + `file_events`(created/modified/deleted/moved).
+5. `dayclose/collect/fs.py`: 루트별 `os.scandir` 워커, 제외 글롭(루트 기준 상대경로), 패키지 디렉터리 처리, 루트 중첩 제거, dataless/`.icloud` 자리표시자는 메타데이터만(02 §10.6), (dev,inode,size,mtime_ns) 비교 → `file_entries` 갱신 + `file_events`(created/modified/deleted/moved).
 6. `dayclose/api/` + `dayclose/cli/`: `version`, `init`, `doctor`(루트 접근성·DB 무결성·권한만), `config *`, `root list/add/remove`, `scan run/list/show`, `change list`. 쓰기 잠금(`state.lock`).
 7. `contracts/envelope.schema.json` + `contracts/fixtures/` 에 `core.version.ok.json`, `scan.run.ok.json`, `change.list.ok.json`, `error.E_NOT_INITIALIZED.json`.
 8. 테스트: `tests/conftest.py`(샌드박스 강제 autouse 픽스처, `Path.home()` 패치), 단위(fs diff, 마이그레이션, 봉투, ID), 통합(subprocess 로 CLI 호출), 계약(봉투 스키마 검증), 안전(`test_no_mutation_outside_executor.py` 정적 검사 — M1 엔 executor 가 비어 있으므로 “어디에도 없음”을 검사).
@@ -54,7 +54,7 @@ uv run dayclose change list --json
 
 종료 기준:
 - `uv run pytest` 녹색, `uv run ruff check`, `uv run mypy src` 오류 0.
-- FR-CORE-001, 003, 004, 006, 007 의 AC 테스트 통과. FR-CORE-002 는 `--no-default-roots` 외 기본 루트 등록 로직이 샌드박스 가짜 홈에서 통과. FR-CORE-005 는 루트 접근성 부분만.
+- FR-CORE-001, 003, 004, 006, 007, 008(스캔 부분) 의 AC 테스트 통과. FR-CORE-002 는 `--no-default-roots` 외 기본 루트 등록 로직이 샌드박스 가짜 홈에서 통과. FR-CORE-005 는 루트 접근성 부분만.
 - 변경 없는 재스캔 시 이벤트 0, 1만 파일 샌드박스 웜 스캔 ≤ 2초(측정값 기록).
 - 실제 `~` 아래 파일 접근 0 (conftest 가드).
 
@@ -129,7 +129,7 @@ uv run dayclose change list --json
 - `migrations/0004_execution.sql`(06 §5.4).
 - `plan/`: 결정 → 연산, 목적지 충돌 회피 이름 결정, `plan_hash`(08 정규화), 승인 3수단(app_button / cli_tty / native_dialog), 테스트 승인 가드.
 - `executor/`: 사전조건·보호 재검증, 볼륨별 휴지통 경로, 같은 볼륨 rename / 볼륨 간 복사→검증→원본 제거, 연산별 커밋, `plan recover`, `plan undo`(충돌 정책).
-- 보관 대상: 로컬/외장 경로(`archive.targets`, FR-AB-001). 외장(`/Volumes/External`) 접근은 프로브 경유.
+- 보관 폴더: `config.archive.root` 하나(로컬/외장, FR-AB-001). 외장(`/Volumes/External`) 접근은 프로브 경유. NAS·원격 대상 없음.
 - 앱: 계획 검토·승인 화면, 실행 진행, 결과·되돌리기(FR-VR-007).
 - 명령: `plan create/show/list/approve/apply/cancel/undo/recover`, `audit list`.
 
@@ -165,23 +165,25 @@ uv run dayclose change list --json
 - 앱 메뉴바(미결 수, 지금 검토), `DayCloseScheduler` 헬퍼, `SMAppService` LaunchAgent `com.dayclose.scheduler`, 잠자기 후 보충 실행, 알림(UserNotifications, [지금 검토]/[나중에]).
 - FDA 안내 흐름, `doctor` 의 launchd 컨텍스트 진단.
 - 결정: core 배포 방식(앱 번들 동봉 Python vs `~/.local/bin/dayclose`) 확정 — 09 문서에 기록.
+- 로컬 서명 고정: Developer ID·공증 없이 고정 로컬 인증서로 앱·헬퍼 서명(02 §4). 재빌드 후 FDA 유지 여부 실기기 검증.
 
 실행 결과: 실제 기기에서 21:00 예약 실행 → 알림 → 클릭 시 앱 결산 화면. FDA 없는 상태에서 외장 루트가 있어도 제한 시간 내 경고로 종료.
-종료 기준: FR-MI-001~004 AC, NFR-REL-001, “셸 실행 vs launchd 실행” 비교 테스트 절차(09) 결과 기록.
+종료 기준: FR-MI-001~004 AC, NFR-REL-001, “셸 실행 vs launchd 실행” 비교 테스트 절차(09) 결과 기록, “재빌드 → FDA 유지” 검증 결과 기록(실패 시 대응 절차를 09 에 명시).
 근거 문서: 09, 03(메뉴바·알림 화면), 11.
 담당: macOS, Integration, QA.
 
-## M8 — Skill, MCP, NAS 보관, Vault 암호화 백업
+## M8 — Skill, MCP
 
 산출물:
 - `skill/SKILL.md`(Claude Code·Codex 공용): 조회 → 결정 → 계획 → 사람 승인(네이티브 대화상자) 흐름.
 - `dayclose mcp serve`: 읽기·결정·계획 생성 도구, 승인·undo·보호 해제 비노출.
-- `migrations/0006_archive.sql`, NAS(SMB 마운트) 보관 대상, `age` 암호화(이때 Homebrew 로 설치), 보관 후 검증, 보안 자산 암호화 백업과 왕복 복호화 검증(FR-SV-009).
 
-실행 결과: Claude Code 세션에서 Skill 로 오늘의 결산 요약 → 계획 생성 → 소유자가 대화상자로 승인 → 실행. NAS 에 암호화 보관 후 복원 검증 성공.
-종료 기준: FR-AG-002~003, FR-AB-002~003, FR-SV-009 AC, MCP 비노출 명령 테스트.
-근거 문서: 10, 05(암호화 백업), 08(archive 연산), 09(마운트 프로브), 11.
-담당: Integration, Security, QA.
+범위 밖(2026-11-24): NAS·SMB 보관, age 암호화 업로드, Vault 원격 백업(FR-AB-002/003, FR-SV-009 삭제).
+
+실행 결과: Claude Code 세션에서 Skill 로 오늘의 결산 요약 → 계획 생성 → 소유자가 대화상자로 승인 → 실행.
+종료 기준: FR-AG-002~003 AC, MCP 비노출 명령 테스트.
+근거 문서: 10, 08(승인 흐름), 11.
+담당: Integration, Security(비노출 명령 검토), QA.
 
 ---
 

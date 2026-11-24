@@ -33,7 +33,7 @@
 
 | 원칙 (CONTEXT 턴1·턴4) | 구조적 장치 |
 |---|---|
-| Local-first | 모든 상태는 로컬 SQLite 1개 파일. 네트워크 호출은 `ai`(옵트인)와 `archive`(M8)에만 존재. |
+| Local-first | 모든 상태는 로컬 SQLite 1개 파일. 네트워크 호출은 `ai`(옵트인)에만 존재. 보관(`archive`)도 로컬/외장 폴더로만. |
 | AI optional | `ai` 모듈 없이 전체 플로우 동작. `ai.enabled=false` 가 기본값. 제안은 `heuristic`/`rule` 출처로도 생성. |
 | Human-in-the-loop | 파일 변경 = `plan` → `approval`(사람만 생성 가능) → `executor`. 우회 경로 없음. |
 | Reversible | 영구 삭제 연산이 엔진에 존재하지 않음(“삭제”=휴지통 이동). 모든 연산은 `plan_operations` 에 사전 기록 후 실행, `undo` 지원. |
@@ -66,7 +66,9 @@ Core 런타임: `cryptography`, `keyring`, `tomli-w`. 그 외는 표준 라이�
 Core 개발: `pytest`, `ruff`, `mypy`.
 외부 도구(있으면 사용, 없으면 기능 축소 + 경고): `git`, `brew`, `gitleaks`, `mdls`, `defaults`, `osascript`.
 Swift: 서드파티 의존성 없음. 시스템 프레임워크만.
-M8 에서 추가 예정: `age`(암호화 백업, 현재 미설치 — 05 문서가 확정).
+`age` 는 쓰지 않는다(2026-11-24: NAS·원격 암호화 백업이 범위에서 빠짐).
+
+라이선스(2026-11-24 확정): 저장소는 **MIT**(`LICENSE`, © 2026 Lunap Lee, 공개 저장소 `lunapsy/DayClose`). 따라서 GPL/AGPL 등 카피레프트 코드는 저장소에 복사·벤더링·링크하지 않는다. 그런 도구는 **별도 설치된 외부 실행파일로 호출**만 한다(`run_tool`). MIT/BSD/Apache-2.0 코드는 출처·라이선스 표기를 남기고 가져올 수 있다(13 문서가 프로젝트별 판정).
 
 새 런타임 의존성 추가는 이 목록을 고치는 PR 로만 한다(AGENTS.md).
 
@@ -86,6 +88,7 @@ M8 에서 추가 예정: `age`(암호화 백업, 현재 미설치 — 05 문서�
 결정: 로컬 소켓/HTTP 서버는 만들지 않는다. 이유: 포트·인증·데몬 수명관리·TCC 귀속 문제가 생기고, stdio 는 부모 프로세스(앱)가 죽으면 같이 정리된다.
 결정: 앱은 키 입력마다 프로세스를 띄우지 않도록 M4 부터 `serve --stdio` 를 쓴다. 이유: Python 기동 100~200ms 가 K/D 연타 UX 를 해친다.
 재검토 조건: `serve --stdio` 의 p95 응답이 `item.list`(200건) 기준 300ms 를 넘으면 그때 병목 지점만 최적화(인덱스·쿼리)하고, 포팅은 여전히 하지 않는다.
+결정(2026-11-24): Developer ID 서명·공증은 하지 않는다. 개인 로컬 빌드만. 결과: TCC(전체 디스크 접근 포함)는 코드 서명의 designated requirement 로 앱을 식별하므로, ad-hoc 서명(`codesign -s -`) 빌드는 재빌드마다 cdhash 가 바뀌어 FDA 승인이 풀릴 수 있다. 대응: 앱·스케줄러 헬퍼를 **항상 같은 로컬 서명 인증서**(Xcode 의 무료 “Apple Development” 인증서, 없으면 키체인 접근에서 만든 자체 서명 코드 서명 인증서)로 서명해 designated requirement 를 고정한다. 재빌드 후 FDA 유지 여부는 M7 에서 실기기 검증 항목(09 문서).
 결정: core 배포는 M3까지 `uv tool install --editable ./core`(→ `~/.local/bin/dayclose`). 앱은 설정 `core.command`(기본 `~/.local/bin/dayclose`)로 찾는다. 앱 번들에 Python 런타임을 동봉할지는 M7 에서 결정(12 문서).
 
 ## 5. 명령 계약 (CLI 표면 + JSON 봉투)
@@ -133,7 +136,7 @@ M8 에서 추가 예정: `age`(암호화 백업, 현재 미설치 — 05 문서�
 | `decision.undo` | `dayclose decision undo (ITEM_ID... \| --last)` | M2 | W. `planned` 이전까지만 |
 | `decision.list` | `dayclose decision list [--since DATE] [--limit N]` | M2 | |
 | `vault.list` / `vault.show` / `vault.health` | `dayclose vault list [--kind K] [--status S]` / `vault show ASSET_ID` / `vault health` | M3 | 읽기 전용 |
-| `vault.annotate` | `dayclose vault annotate ASSET_ID [--label TEXT] [--note TEXT] [--expires DATE]` | M3 | W. 암호화 필드 |
+| `vault.annotate` | `dayclose vault annotate ASSET_ID [--label TEXT] [--note TEXT] [--expires DATE] [--backup verified\|none\|unknown]` | M3 | W. 암호화 필드. `--backup` 이 `backup_status` 의 유일한 갱신 경로(PRD §9 O2) |
 | `app.list` | `dayclose app list [--new] [--removed]` | M3 | |
 | `package.list` | `dayclose package list [--manager brew_formula\|brew_cask] [--new]` | M3 | |
 | `project.list` | `dayclose project list [--active]` | M2 | git 저장소/프로젝트 |
@@ -151,7 +154,6 @@ M8 에서 추가 예정: `age`(암호화 백업, 현재 미설치 — 05 문서�
 | `policy.suggestions` / `policy.accept` / `policy.reject` | `dayclose policy suggestions` / `accept RULE_ID` / `reject RULE_ID` | M6 | 학습 규칙 제안(07 문서) |
 | `ai.status` / `ai.classify` | `dayclose ai status` / `ai classify [--review-date DATE]` | M6 | 옵트인 |
 | `core.serve` | `dayclose serve --stdio` | M4 | 전송 계층 |
-| `archive.target.*`, `archive.verify` | 10 문서가 확정 | M8 | |
 | `mcp.serve` | `dayclose mcp serve` | M8 | 전송 계층 |
 
 ACTION(= `decision_action` enum, 06 문서): `keep`, `keep_always`, `trash`, `move`, `archive`, `defer`, `acknowledge`. 어떤 항목에 어떤 ACTION 이 허용되는지는 항목 JSON 의 `allowed_actions` 가 유일한 기준이다(§5.6).
@@ -276,7 +278,7 @@ stdio 서버 요청 형식(M4):
 Python 패키지 `dayclose` (위치 `core/src/dayclose/`). 화살표는 “import 가능” 방향. **역방향 import 금지**(ruff/테스트로 검사, 11 문서).
 
 ```
-cli, serve, mcp  →  api  →  review, plan, vault, intel, collect, policy, ai, archive, executor
+cli, serve, mcp  →  api  →  review, plan, vault, intel, collect, policy, ai, executor
                                   ↓
                           store, config, common
 ```
@@ -294,7 +296,6 @@ cli, serve, mcp  →  api  →  review, plan, vault, intel, collect, policy, ai,
 | `plan` | 결정 → 연산 목록, `plan_hash`, 승인 기록 | 파일 변경 | 08 |
 | `executor` | 승인된 plan 실행, 사전조건 재검증, 휴지통/이동, undo, 복구 | 결정·정책 수정 | 08 |
 | `ai` (M6) | 공급자 추상화(none/ollama/anthropic/openai), 전송 게이트(마스킹·차단), 요청 감사 | 파일 접근(받은 메타데이터만 다룸) | 07 |
-| `archive` (M8) | NAS/외장 보관 대상, 암호화 백업, 검증 | — | 05, 10 |
 | `api` | 명령 레지스트리, 인자 검증, 잠금 획득, 감사 기록, 봉투 생성 | 전송 형식 | 10 |
 | `cli`, `serve`, `mcp` | 전송 계층(argv/stdio/MCP ↔ api) | 로직 | 10 |
 
@@ -344,7 +345,7 @@ Swift 코드는 사용자 파일을 변경하지 않는다(휴지통·이동 포
 
 `DAYCLOSE_HOME` 이 지정되면 로그·캐시도 그 아래(`logs/`, `cache/`)로 간다(테스트 격리).
 
-용량 예산(결정: 내장 디스크 245GB 가 자주 가득 차므로): DB 목표 < 200MB(파일 50만 개 기준). 이를 위해 파일 내용·썸네일은 DB 에 저장하지 않고, `file_events` 는 90일, 종결 항목(`executed`/`undone`/`stale`/`suppressed`)의 세부 이력은 180일 후 압축(06 문서 §8). DayClose 는 1GB 이상 산출물을 만들지 않는다. 대용량 보관(M8)은 사용자가 지정한 외장/NAS 대상으로만.
+용량 예산(결정: 내장 디스크 245GB 가 자주 가득 차므로): DB 목표 < 200MB(파일 50만 개 기준). 이를 위해 파일 내용·썸네일은 DB 에 저장하지 않고, `file_events` 는 90일, 종결 항목(`executed`/`undone`/`stale`/`suppressed`)의 세부 이력은 180일 후 압축(06 문서 §8). DayClose 는 1GB 이상 산출물을 만들지 않는다. `archive` 결정의 보관 폴더는 사용자가 지정한 로컬/외장 경로(`archive.root`, 예 `/Volumes/External/DayCloseArchive`).
 
 ## 9. 설정 (`config.toml`)
 
@@ -359,10 +360,10 @@ day_boundary = "04:00"              # 결정: 자정~04:00 작업은 전날 결�
 carryover = true
 
 [scan]
-exclude_globs = ["**/.DS_Store", "**/node_modules/**", "**/.git/**", "**/*.photoslibrary/**", "**/Library/**"]
+exclude_globs = ["**/.DS_Store", "**/node_modules/**", "**/.git/**", "**/*.photoslibrary/**", "**/Library/**"]  # 루트 기준 상대경로에 매칭 (iCloud Drive 루트 자체가 ~/Library 아래에 있으므로)
 package_dirs_as_files = true        # .app, .bundle, .photoslibrary 등은 하나의 항목으로
 hash_max_bytes = 67108864           # 64MB 초과 파일은 SHA-256 생략(중복 탐지 제외)
-read_dataless = false               # iCloud dataless 파일 내용 읽기 금지 (다운로드 유발)
+read_dataless = false               # iCloud 미다운로드(dataless) 파일 내용 읽기 금지 — 변경 불가 고정값 (§10.6)
 volume_probe_timeout_s = 5
 
 [projects]
@@ -370,7 +371,8 @@ roots = ["~/dev"]
 active_days = 30                    # 결정: 최근 30일 커밋/수정 또는 미커밋 변경이 있으면 활성
 
 [protection]
-patient_paths = []                  # 약국 자료 폴더 (미결 사항 — PRD §9)
+# 결정(2026-11-24): 환자 자료 전용 폴더 설정은 두지 않는다(이 Mac 에 없음). 판정은 아래 기본 패턴만.
+# 필요하면 일반 보호 규칙(`rule add --protection patient_data`)으로 추가.
 patient_filename_patterns = ["*처방*", "*조제*", "*환자*"]
 detect_rrn_in_text = true           # 주민등록번호 패턴 탐지 (로컬)
 
@@ -384,10 +386,12 @@ expiry_warn_days = 30
 enabled = false
 provider = "none"                   # none | ollama | anthropic | openai
 model = ""
-allow_external = false              # true 여도 sensitivity 게이트는 무조건 적용
+allow_external = false              # 외부 공급자(anthropic/openai) 사용 허용(소유자 승인 2026-11-24). 옵트인: enabled=true + allow_external=true + Keychain 키 존재 시에만.
+                                    # 키가 없으면 enabled=true 여도 E_AI_DISABLED. sensitivity 게이트는 무조건 적용(patient/secret → 어떤 모델에도 안 보냄)
 
-[archive]                           # M5(로컬/외장), M8(NAS)
-targets = []
+[archive]                           # M5
+root = ""                           # 보관 폴더(로컬/외장). 비어 있으면 archive 동작 불가(E_ARCHIVE_TARGET_MISSING).
+                                    # 배치: <root>/<YYYY>/<MM>/<원래 이름> (충돌 시 08 문서 규칙). NAS/SMB·원격 대상은 비목표
 
 [core]
 log_level = "info"
@@ -412,7 +416,8 @@ log_level = "info"
 | `user_rule` | 사용자 보호 규칙 | `keep`, `keep_always`, `defer`, `acknowledge` | 포함 가능 |
 | `none` | 그 외 | 카테고리별(04 문서). 파일: `keep`, `keep_always`, `trash`, `move`, `archive`, `defer` | 포함 가능 |
 
-예외 1건: `active_repo` 안이라도 `category=dev_cache`(재생성 가능한 산출물) 항목은 항목 단위 `trash` 허용(06 §3.1, 목록은 04).
+예외 2: iCloud Drive 루트(`icloud_drive`) 항목과 dataless(미다운로드) 파일은 `trash`·`move`·`archive` 를 `allowed_actions` 에서 뺀다(`keep`, `keep_always`, `defer` 만). 이유: 휴지통 이동이 다른 기기의 삭제로 전파되고, 기기 밖 복사는 다운로드를 유발. 08 문서가 실기기 검증 절차를 정한 뒤에만 완화.
+예외 1: `active_repo` 안이라도 `category=dev_cache`(재생성 가능한 산출물) 항목은 항목 단위 `trash` 허용(06 §3.1, 목록은 04).
 결정: 환자 자료는 `trash` 를 허용하지 않는다. 이유: 조제·처방 관련 기록의 법정 보존 가능성 — 폐기는 DayClose 밖에서 사람이 한다.
 결정: 앱·패키지·저장소·로그인 항목(`subject_type != file/dir`)은 MVP~M5 에서 `acknowledge`, `keep_always`, `defer` 만. 앱 삭제는 범위 밖(PRD 비목표).
 
@@ -441,6 +446,14 @@ log_level = "info"
 - `~/Desktop`, `~/Documents`, `~/Downloads` 는 TCC 보호 폴더. `PermissionError`(EPERM) → `E_TCC_DENIED` / `W_TCC_DENIED` 로 구분해 보고(일반 `E_PERMISSION` 과 다름).
 - 예약 실행은 앱 번들 헬퍼가 core 를 자식으로 띄워 TCC 책임 프로세스를 DayClose.app 으로 만든다. 사용자는 DayClose.app 에 전체 디스크 접근 권한을 준다. Python 인터프리터 자체에 FDA 를 주는 방식은 금지(모든 Python 스크립트에 권한이 새어 나감).
 - `core.doctor` 는 각 루트에 대해 `ok | tcc_denied | timeout | missing` 을 보고한다. 진단 순서는 “셸 직접 실행 vs launchd 실행 비교”(09 문서).
+- 로컬 빌드 서명 고정(§4 결정)이 깨지면 재빌드 후 FDA 가 풀린 것처럼 보인다 → `doctor` 가 `timeout`/`tcc_denied` 를 보고할 때 안내 문구에 “재서명 여부 확인”을 포함.
+
+### 10.6 iCloud Drive 와 미다운로드 파일
+- 기본 루트에 `~/Documents`(documents)와 iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs`(`icloud_drive`)를 포함한다(2026-11-24 확정).
+- dataless 판정: `st_flags & SF_DATALESS (0x40000000)`. 구형 자리표시자 `.<이름>.icloud` 파일도 dataless 로 취급(원래 이름으로 표시).
+- dataless 파일에 대해 core 는 `open`/읽기/해시/매직바이트·내용 패턴 검사/gitleaks 를 **하지 않는다**(`lstat`·`scandir` 메타데이터만). `W_DATALESS_SKIPPED` 로 집계. 앱은 썸네일을 만들지 않고 아이콘만, Space 미리보기는 “다운로드됨” 경고 후에만.
+- 루트 중첩(“데스크탑 및 문서 폴더” iCloud 동기화로 경로가 겹치는 경우): 수집기는 심볼릭 링크를 따라가지 않고, 다른 루트의 하위에 있는 경로는 바깥 루트 순회에서 건너뛴다. 같은 (dev, inode) 루트 디렉터리는 한 번만 순회.
+- iCloud 경로 접근도 EPERM 이면 `W_TCC_DENIED`.
 
 ## 11. 오류 모델
 
@@ -478,7 +491,7 @@ DayCloseError(code: str, message: str, details: dict = {}, retryable: bool = Fal
 | `E_PATH_OUTSIDE_ROOTS` | 등록된 루트/목적지 허용 목록 밖의 경로 |
 | `E_AI_DISABLED` | AI 비활성 상태에서 AI 명령 |
 | `E_AI_BLOCKED_SENSITIVE` | 민감 항목을 AI 로 보내려 함 |
-| `E_ARCHIVE_TARGET_MISSING` | 보관 대상 미설정 |
+| `E_ARCHIVE_TARGET_MISSING` | `archive.root` 미설정 또는 접근 불가 |
 | `E_PERMISSION` | 일반 권한 오류 |
 | `E_TCC_DENIED` | macOS 개인정보 보호(TCC) 거부 |
 | `E_VOLUME_UNAVAILABLE` | 볼륨 미마운트 |
@@ -515,7 +528,7 @@ DayCloseError(code: str, message: str, details: dict = {}, retryable: bool = Fal
 
 ```
 DayClode/                         # 폴더명은 DayClode, 제품명은 DayClose (이름 변경 금지)
-├── AGENTS.md  README.md  CONTEXT.md  .gitignore
+├── AGENTS.md  README.md  CONTEXT.md  LICENSE (MIT)  .gitignore
 ├── docs/                         # 01~13 명세
 ├── contracts/
 │   ├── envelope.schema.json      # 봉투 JSON Schema
@@ -526,7 +539,7 @@ DayClode/                         # 폴더명은 DayClode, 제품명은 DayClose
 │   │   ├── __main__.py
 │   │   ├── common/   config/   store/ (migrations/0001_*.sql …)
 │   │   ├── collect/  intel/    vault/    policy/   review/   plan/   executor/
-│   │   ├── ai/ (M6)  archive/ (M8)
+│   │   ├── ai/ (M6)
 │   │   ├── api/      cli/      serve/ (M4)   mcp/ (M8)
 │   └── tests/
 │       ├── conftest.py           # 샌드박스 강제 픽스처
@@ -545,7 +558,7 @@ DayClode/                         # 폴더명은 DayClode, 제품명은 DayClose
 
 ### 15.1 공유 이름 (이 목록 밖의 이름을 새로 만들지 말고, 필요하면 02/06을 먼저 고친다)
 
-- 모듈: `common`, `config`, `store`, `collect`, `intel`, `vault`, `policy`, `review`, `plan`, `executor`, `ai`, `archive`, `api`, `cli`, `serve`, `mcp`. Swift: `DayCloseKit`, `DayClose`, `DayCloseScheduler`, `dayclose-native`.
+- 모듈: `common`, `config`, `store`, `collect`, `intel`, `vault`, `policy`, `review`, `plan`, `executor`, `ai`, `api`, `cli`, `serve`, `mcp`. (`archive` 모듈은 2026-11-24 삭제 — 보관은 executor 의 `archive` 연산) Swift: `DayCloseKit`, `DayClose`, `DayCloseScheduler`, `dayclose-native`.
 - 명령 ID: §5.3 표. 봉투 필드: `schema`, `command`, `ok`, `data`, `warnings`, `error{code,message,details,retryable}`, `meta{request_id,core_version,contract_version,db_schema_version,device_id,duration_ms}`.
 - ID 접두사: §5.1. 오류·경고 코드: §11. 종료 코드: §5.5.
 - 항목 JSON 필드: §5.6 (`allowed_actions`, `preview_policy`, `ai_policy`, `protection`, `sensitivity`, `suggestion{action,dest,source,reason,confidence}`).
@@ -558,10 +571,10 @@ DayClode/                         # 폴더명은 DayClode, 제품명은 DayClose
 
 - **03-UI-UX-SPEC** — DayClose.app 의 화면·상호작용 명세: 일일 결산 메인(지표 카드·그룹 목록), 그룹 상세의 갤러리/리스트/비교 모드, Quick Look·썸네일, 키보드 단축키(Space, ←→, K/D/A/M/S, ⌘Z)와 `decision_action` 매핑, 계획 검토·승인 화면, Secure Vault 화면(마스킹·메타데이터 중심), 빈 상태·오류 상태·로딩, 접근성. 데이터는 §5 명령으로만 얻고 `allowed_actions`/`preview_policy` 를 존중한다. 메뉴바·알림의 *화면* 은 여기, *등록·권한* 은 09.
 - **04-FILE-INTELLIGENCE** — `collect`(fs·git·apps·brew·login_items 수집기)와 `intel` 의 알고리즘: 증분 스캔(비교 키, 이동/이름변경 판정, 제외 규칙, 패키지 디렉터리, dataless 파일), 카테고리 판정 표(`item_category`), 어떤 변경이 리뷰 항목이 되는지, 그룹 키 규칙, SHA-256 중복 탐지, 프로젝트 매칭·활성 저장소 판정, 휴리스틱 제안 규칙, 성능 목표. 보안 자산 판정은 05에 위임.
-- **05-SECURE-VAULT** — `vault` 모듈: 자산 종류(`vault_asset_kind`)별 탐지 규칙(확장자·매직바이트·내용 패턴·gitleaks 통합 방식), 인증서/키 메타데이터 추출과 지문, 건강 점검(`vault_finding_type`: 만료·git 추적·중복·권한·백업 미확인), 마스킹 규칙, 시드 구문 비수집 원칙, Git 노출 키의 폐기·재발급 권고 문구, M8 암호화 보관(age)과 복구 검증 절차. 일반 executor 가 자산을 건드리지 못하게 하는 규칙의 근거.
+- **05-SECURE-VAULT** — `vault` 모듈: 자산 종류(`vault_asset_kind`)별 탐지 규칙(확장자·매직바이트·내용 패턴·gitleaks 통합 방식), 인증서/키 메타데이터 추출과 지문, 건강 점검(`vault_finding_type`: 만료·git 추적·중복·권한·백업 미확인), 마스킹 규칙, 시드 구문 비수집 원칙, Git 노출 키의 폐기·재발급 권고 문구, `backup_status` 판정(기본: 사용자 표시 — PRD 미결 사항). NAS·원격 암호화 백업은 비목표. 일반 executor 가 자산을 건드리지 못하게 하는 규칙의 근거.
 - **07-AI-MEMORY-POLICY** — `policy` 의 기억/학습 부분과 `ai` 모듈: `keep_always` suppression 매칭 규칙, 반복 결정 → 규칙 제안(`policy_rules`, 1일차/1주/1개월 시나리오), 규칙 자동 적용 시에도 승인 필수, AI 공급자(none/ollama/anthropic/openai) 인터페이스, `sensitivity` → `ai_policy` 게이트, 전송 페이로드 스키마와 마스킹, AI 출력 검증(데이터로만 취급), `ai_requests` 감사.
 - **08-SAFE-EXECUTION** — `plan`·`executor`: 결정→연산 변환, `plan_hash` 정규화 방식, 승인 프로토콜 3수단 상세, 연산별(trash/move/archive/rename/restore) 절차와 사전조건, 볼륨별 휴지통 경로, 볼륨 간 이동, 충돌 처리, 크래시 복구(`plan.recover`), undo 규칙과 불가 조건, 보호 등급 재평가, 샌드박스 가드, 실패 시나리오 표.
-- **09-MACOS-INTEGRATION** — macOS 시스템 연동: TCC/FDA 요구 사항과 진단 절차(셸 vs launchd 비교), 볼륨 프로브, `SMAppService` 기반 LaunchAgent·스케줄러 헬퍼, 알림(UserNotifications) 등록·문구, 메뉴바 등록, 스크린샷 저장 위치 읽기(`defaults read com.apple.screencapture location`), 앱 인벤토리 소스(Info.plist, `mdls kMDItemLastUsedDate`), 로그인 항목·LaunchAgents 수집, 코드 서명·공증, core 실행파일 탐색, 앱↔core 프로세스 수명관리.
-- **10-CLI-SKILL-MCP** — §5 계약의 완전한 레퍼런스: 명령별 인자·`data` 스키마·오류 케이스·예시, `serve --stdio` 프로토콜 세부, `contracts/` 픽스처 규칙, `core.schema` 출력, Skill(SKILL.md) 작성(에이전트가 따라야 할 승인 흐름), MCP 도구 매핑과 비노출 명령, NAS/보관 명령(`archive.*`) 확정.
+- **09-MACOS-INTEGRATION** — macOS 시스템 연동: TCC/FDA 요구 사항과 진단 절차(셸 vs launchd 비교), 볼륨 프로브, `SMAppService` 기반 LaunchAgent·스케줄러 헬퍼, 알림(UserNotifications) 등록·문구, 메뉴바 등록, 스크린샷 저장 위치 읽기(`defaults read com.apple.screencapture location`), 앱 인벤토리 소스(Info.plist, `mdls kMDItemLastUsedDate`), 로그인 항목·LaunchAgents 수집, 로컬 빌드 코드 서명 고정과 재빌드 후 FDA 유지 검증(공증 없음), iCloud Drive 경로·dataless 처리, core 실행파일 탐색, 앱↔core 프로세스 수명관리.
+- **10-CLI-SKILL-MCP** — §5 계약의 완전한 레퍼런스: 명령별 인자·`data` 스키마·오류 케이스·예시, `serve --stdio` 프로토콜 세부, `contracts/` 픽스처 규칙, `core.schema` 출력, Skill(SKILL.md) 작성(에이전트가 따라야 할 승인 흐름), MCP 도구 매핑과 비노출 명령. (`archive.*` 명령 그룹은 없음 — 보관은 `decision.set --action archive` + `config.archive.root`)
 - **11-TEST-PLAN** — 테스트 전략: 샌드박스 픽스처 규약, 단위/통합/안전/계약/UI 테스트 구분, 안전 회귀 스위트(비밀 누출 0, executor 외 변경 금지 정적 검사, 승인 없는 실행 불가, 보호 항목 불변), 장애 주입(크래시 중 apply, 볼륨 분리, TCC 거부, 휴지통 비움 후 undo), 성능 기준, 마일스톤별 인수 테스트 목록, CI 명령.
-- **13-OPEN-SOURCE-RESEARCH** — CONTEXT 턴0 의 프로젝트들(agentic-mac-skills, Mole, Sorty, Declutter, FileMorrow, FolderSorter, Composio file-organizer, Sortwise, Binky)과 gitleaks 등 도구의 라이선스·재사용 가능 부분·참고할 설계·채택/비채택 결정. 코드 복사 시 라이선스 표기 규칙. 이 문서의 결론이 02 의 기술 선택을 바꾸려면 02 를 먼저 수정.
+- **13-OPEN-SOURCE-RESEARCH** — CONTEXT 턴0 의 프로젝트들(agentic-mac-skills, Mole, Sorty, Declutter, FileMorrow, FolderSorter, Composio file-organizer, Sortwise, Binky)과 gitleaks 등 도구의 라이선스·재사용 가능 부분·참고할 설계·채택/비채택 결정. 저장소가 MIT 이므로 GPL/AGPL 코드는 복사 불가·외부 도구 호출만 가능하다는 기준으로 판정하고, 코드 복사 시 라이선스 표기 규칙을 정한다. 이 문서의 결론이 02 의 기술 선택을 바꾸려면 02 를 먼저 수정.
