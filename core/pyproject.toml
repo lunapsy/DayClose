@@ -1,0 +1,47 @@
+[project]
+name = "dayclose"
+version = "0.1.0"
+description = "DayClose core: local-first digital housekeeping agent for macOS"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+dayclose = "dayclose.cli.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "hypothesis>=6",
+    "jsonschema>=4.23",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -m 'not perf and not nightly' -p no:cacheprovider"
+faulthandler_timeout = 120
+markers = [
+    "perf: performance measurement (excluded by default)",
+    "nightly: long-running property/fault tests (excluded by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "src"
+packages = ["dayclose"]
