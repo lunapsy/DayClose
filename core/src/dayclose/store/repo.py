@@ -146,6 +146,181 @@ def update_root_icloud(conn: sqlite3.Connection, root_id: int, synced: int, sour
     )
 
 
+# --------------------------------------------------------------------------- scan_runs
+
+
+@dataclass
+class RunRow:
+    id: int
+    started_at: int
+    finished_at: int | None
+    status: str
+    trigger: str
+    collectors: list[str]
+    stats: dict[str, Any]
+    error_code: str | None
+
+
+_RUN_COLS = (
+    'id, started_at, finished_at, status, "trigger", collectors_json, stats_json, error_code'
+)
+
+
+def _run(row: Sequence[Any]) -> RunRow:
+    return RunRow(
+        id=row[0],
+        started_at=row[1],
+        finished_at=row[2],
+        status=row[3],
+        trigger=row[4],
+        collectors=json.loads(row[5]),
+        stats=json.loads(row[6]),
+        error_code=row[7],
+    )
+
+
+def interrupt_running_runs(conn: sqlite3.Connection, now_ms: int) -> int:
+    cur = conn.execute(
+        "UPDATE scan_runs SET status='interrupted', finished_at=COALESCE(finished_at, ?) "
+        "WHERE status='running'",
+        (now_ms,),
+    )
+    return cur.rowcount
+
+
+def create_run(
+    conn: sqlite3.Connection,
+    *,
+    started_at: int,
+    trigger: str,
+    collectors: list[str],
+    request_id: str,
+) -> int:
+    cur = conn.execute(
+        'INSERT INTO scan_runs(started_at, status, "trigger", collectors_json, request_id) '
+        "VALUES (?, 'running', ?, ?, ?)",
+        (started_at, trigger, json.dumps(collectors), request_id),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    status: str,
+    finished_at: int,
+    stats: dict[str, Any],
+    error_code: str | None,
+) -> None:
+    conn.execute(
+        "UPDATE scan_runs SET status=?, finished_at=?, stats_json=?, error_code=? WHERE id=?",
+        (status, finished_at, json.dumps(stats, ensure_ascii=False), error_code, run_id),
+    )
+
+
+def get_run(conn: sqlite3.Connection, run_id: int) -> RunRow | None:
+    row = conn.execute(f"SELECT {_RUN_COLS} FROM scan_runs WHERE id=?", (run_id,)).fetchone()
+    return None if row is None else _run(row)
+
+
+def latest_run_id(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute("SELECT max(id) FROM scan_runs").fetchone()
+    return None if row is None or row[0] is None else int(row[0])
+
+
+def list_runs(
+    conn: sqlite3.Connection, *, limit: int, after: tuple[int, int] | None
+) -> tuple[list[RunRow], int]:
+    where = ""
+    params: list[Any] = []
+    if after is not None:
+        where = " WHERE (started_at < ? OR (started_at = ? AND id < ?))"
+        params = [after[0], after[0], after[1]]
+    rows = conn.execute(
+        f"SELECT {_RUN_COLS} FROM scan_runs{where} ORDER BY started_at DESC, id DESC LIMIT ?",
+        (*params, limit + 1),
+    ).fetchall()
+    total = int(conn.execute("SELECT count(*) FROM scan_runs").fetchone()[0])
+    return [_run(r) for r in rows], total
+
+
+def traversed_root_ids(conn: sqlite3.Connection) -> set[int]:
+    """Roots that some finished run traversed (ok/partial) - the baseline test (04 §3.4)."""
+    rows = conn.execute(
+        "SELECT DISTINCT json_extract(j.value, '$.root_id') FROM scan_runs r, "
+        "json_each(r.stats_json, '$.root_results') j "
+        "WHERE r.status IN ('completed','partial') "
+        "AND json_extract(j.value, '$.traversed') = 1"
+    ).fetchall()
+    return {int(r[0]) for r in rows if r[0] is not None}
+
+
+# --------------------------------------------------------------------------- file_events
+
+
+@dataclass
+class EventRow:
+    id: int
+    run_id: int
+    entry_id: int
+    event: str
+    kind: str
+    old_path: str | None
+    new_path: str | None
+    size_delta: int
+    detected_at: int
+
+
+def list_events(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int | None,
+    since_ms: int | None,
+    events: list[str] | None,
+    root_id: int | None,
+    limit: int,
+    after: tuple[int, int] | None,
+    count_cap: int,
+) -> tuple[list[EventRow], int | None]:
+    where: list[str] = []
+    params: list[Any] = []
+    if run_id is not None:
+        where.append("ev.run_id = ?")
+        params.append(run_id)
+    if since_ms is not None:
+        where.append("ev.detected_at >= ?")
+        params.append(since_ms)
+    if events:
+        where.append(f"ev.event IN ({','.join('?' * len(events))})")
+        params.extend(events)
+    if root_id is not None:
+        where.append("e.root_id = ?")
+        params.append(root_id)
+    base = " FROM file_events ev JOIN file_entries e ON e.id = ev.entry_id"
+    cond = (" WHERE " + " AND ".join(where)) if where else ""
+    page_cond = cond
+    page_params = list(params)
+    if after is not None:
+        page_cond += (" AND " if cond else " WHERE ") + (
+            "(ev.detected_at < ? OR (ev.detected_at = ? AND ev.id < ?))"
+        )
+        page_params += [after[0], after[0], after[1]]
+    rows = conn.execute(
+        "SELECT ev.id, ev.run_id, ev.entry_id, ev.event, e.kind, ev.old_path, ev.new_path,"
+        " ev.size_delta, ev.detected_at"
+        + base
+        + page_cond
+        + " ORDER BY ev.detected_at DESC, ev.id DESC LIMIT ?",
+        (*page_params, limit + 1),
+    ).fetchall()
+    capped = conn.execute(
+        f"SELECT count(*) FROM (SELECT 1{base}{cond} LIMIT ?)", (*params, count_cap + 1)
+    ).fetchone()[0]
+    total: int | None = int(capped) if capped <= count_cap else None
+    return [EventRow(*r) for r in rows], total
+
+
 # --------------------------------------------------------------------------- audit_log
 
 
