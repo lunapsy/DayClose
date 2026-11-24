@@ -119,10 +119,10 @@ dayclose [GLOBAL FLAGS] <verb>                     # core.* 만: version, init, 
 
 공유 객체 형태:
 - **Item**: 02 §5.6 그대로(`blocked_reasons`, `origin_root_kind`, `is_dataless`, `icloud_synced`(bool) 포함). `blocked_reasons` 이유 코드는 06 `blocked_reason` enum(`security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `archive_root_unset`, `not_yet_available`), 한 동작에 이유가 여럿이면 그 순서의 첫 번째. 이하 `Item`.
-- **iCloud 규칙(02 §10.1 예외 2, FR-EX-008)**: dataless 파일 → 파일 동작 4개 모두 막힘(`dataless`). iCloud 동기화 경로의 다운로드된 파일 → `move`/`archive`/`rename` 은 항상 `icloud_synced`; `trash` 는 해제 게이트(코드 상수 `policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** 설정 `icloud.allow_trash`)가 둘 다 참일 때만 허용, 아니면 `icloud_synced`. 게이트 거짓 예 `{"trash": "icloud_synced", "move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`, 게이트 참 예 `{"move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`. `icloud_synced=true` 이고 `trash` 가 허용되면 UI·에이전트는 "다른 기기에서도 삭제됨"을 알린다.
+- **iCloud 규칙(02 §10.1 예외 2, FR-EX-008)**: dataless 파일 → 파일 동작 4개 모두 막힘(`dataless`). iCloud 동기화 경로의 다운로드된 파일 → `move`/`archive`/`rename` 은 v1 에서 허용하지 않는다(확정, 08 §9.1) — 항상 `icloud_synced`; `trash` 는 해제 게이트(코드 상수 `policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** 설정 `icloud.allow_trash`)가 둘 다 참일 때만 허용, 아니면 `icloud_synced`. 게이트 거짓 예 `{"trash": "icloud_synced", "move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`, 게이트 참 예 `{"move": "icloud_synced", "archive": "icloud_synced", "rename": "icloud_synced"}`. `icloud_synced=true` 이고 `trash` 가 허용되면 UI·에이전트는 "다른 기기에서도 삭제됨"을 알린다.
 - **Group**: §2.5 끝의 Group 형태.
 - **Plan**: §2.11 첫머리의 Plan 형태.
-- **Root**: `{"id":"root_1","path":"/…/user/Downloads","display_path":"~/Downloads","kind":"downloads","enabled":true,"max_depth":null,"file_level":true,"icloud_synced":false,"icloud_synced_mode":"auto","icloud_synced_source":"detected","created_at":"…"}`. `icloud_synced` = 실효값, `icloud_synced_mode` = `auto|yes|no`(사용자 지정, 기본 `auto`), `icloud_synced_source` = `detected|user|assumed`. 실효값: `yes`→1, `no`→0, `auto`→04 의 판정; `auto` 인데 신호가 없으면 `desktop`·`documents` 루트는 1(`assumed`), 그 외 0(`detected`).
+- **Root**: `{"id":"root_1","path":"/…/user/Downloads","display_path":"~/Downloads","kind":"downloads","enabled":true,"max_depth":null,"file_level":true,"icloud_synced":false,"icloud_synced_mode":"auto","icloud_synced_source":"detected","created_at":"…"}`. `icloud_synced` = 실효값, `icloud_synced_mode` = `auto|yes|no`(사용자 지정, 기본 `auto`), `icloud_synced_source` = `detected|user|assumed`. 실효값: `yes`→1, `no`→0, `auto`→04 의 판정; `auto` 인데 신호가 없으면 `desktop`·`documents` 루트는 1(`assumed`), 그 외 0(`detected`). 단 **실시간 양성 신호(08 §9.2 S1~S3)는 `no` 를 이긴다** — `plan.create`·실행 직전 검사와 `allowed_actions` 계산이 신호를 다시 보므로, `no` 는 신호가 하나도 없을 때만 효력이 있다.
 
 ### 2.1 core
 
@@ -872,7 +872,7 @@ description: >-
   프로젝트 문서·보안 자산을 조회하고, 사용자 결정을 기록해 정리 계획을 만든 뒤 사용자에게
   승인을 요청한다. "오늘 정리", "하루 결산", "DayClose", "다운로드/바탕화면 정리",
   "clean up my Mac today" 요청에 사용. 파일을 직접 옮기거나 지우지 않으며 승인은 사용자만 한다.
-allowed-tools: Bash(dayclose version *) Bash(dayclose doctor *) Bash(dayclose schema *) Bash(dayclose scan *) Bash(dayclose change *) Bash(dayclose review *) Bash(dayclose group *) Bash(dayclose item *) Bash(dayclose decision *) Bash(dayclose vault list *) Bash(dayclose vault show *) Bash(dayclose vault health *) Bash(dayclose app *) Bash(dayclose package *) Bash(dayclose project *) Bash(dayclose report *) Bash(dayclose rule list *) Bash(dayclose suppression list *) Bash(dayclose plan create *) Bash(dayclose plan show *) Bash(dayclose plan list *) Bash(dayclose plan cancel *) Bash(dayclose audit *) Bash(dayclose policy suggestions *) Bash(dayclose ai status *) Bash(dayclose config get *) Bash(dayclose config list *) Bash(dayclose root list *)
+allowed-tools: Bash(dayclose version *) Bash(dayclose doctor *) Bash(dayclose scan *) Bash(dayclose change *) Bash(dayclose review *) Bash(dayclose group *) Bash(dayclose item *) Bash(dayclose decision *) Bash(dayclose vault list *) Bash(dayclose vault show *) Bash(dayclose vault health *) Bash(dayclose app *) Bash(dayclose package *) Bash(dayclose project *) Bash(dayclose report *) Bash(dayclose rule list *) Bash(dayclose suppression list *) Bash(dayclose plan create *) Bash(dayclose plan show *) Bash(dayclose plan list *) Bash(dayclose plan cancel *) Bash(dayclose audit *) Bash(dayclose policy suggestions *) Bash(dayclose ai status *) Bash(dayclose config get *) Bash(dayclose config list *) Bash(dayclose root list *)
 ---
 ```
 
@@ -1026,7 +1026,7 @@ policy:
 
 ### 9.3 노출 도구와 비노출 명령
 
-비노출 목록은 02 §10.3 이 계약이다: `plan.approve`, `plan.apply`, `plan.undo`, `plan.recover`, `core.app_key`, `core.init`, `config.set`, `root.add`, `root.remove`, `root.set`, `rule.add`, `rule.remove`, `suppression.add`, `suppression.remove`, `policy.accept`, `policy.reject`, `ai.key.set`, `ai.key.remove`, `ai.classify`, `vault.annotate`, 그리고 전송 계층 `core.serve`·`mcp.serve`, 중복인 `core.schema`(`tools/list` 가 같은 정보). 그 밖의 명령은 모두 도구로 노출한다. 결정: 목록을 10 에서 더 줄이거나 늘리지 않는다 — 계약 테스트(11 `test_mcp_has_no_approval_tools`)가 02 목록과의 일치를 검사한다.
+원칙(02 §10.3-3): 에이전트는 읽기, 결정 기록·취소, 스캔 실행, 계획 생성, 승인 **요청**까지 할 수 있고, 파일을 바꾸거나 DayClose 가 무엇을 보고 어떻게 보호하는지를 바꿀 수 없다. 비노출 목록은 02 §10.3 이 계약이다: `plan.approve`, `plan.apply`, `plan.undo`, `plan.recover`, `core.app_key`, `core.init`, `config.set`, `root.add`, `root.remove`, `root.set`, `rule.add`, `rule.remove`, `suppression.add`, `suppression.remove`, `policy.accept`, `policy.reject`, `ai.key.set`, `ai.key.remove`, `ai.classify`, `vault.annotate`, 그리고 전송 계층 `core.serve`·`mcp.serve`, 중복인 `core.schema`(`tools/list` 가 같은 정보). 그 밖의 명령은 모두 도구로 노출한다. 결정: 목록을 10 에서 더 줄이거나 늘리지 않는다 — 계약 테스트(11 `test_mcp_has_no_approval_tools`)가 02 목록과의 일치를 검사한다.
 
 노출 도구(annotations: R = `readOnlyHint`, D = `destructiveHint`, I = `idempotentHint`; `openWorldHint` 는 모두 false. 사양 기본값이 `destructiveHint=true` 이므로 쓰기 도구도 **명시적으로** `false` 를 넣는다 — 노출 도구 중 사용자 파일을 바꾸는 것은 없다):
 
@@ -1138,7 +1138,8 @@ MCP 와 Skill 은 같은 투영(§1.5)을 쓴다. 기준은 `sensitivity` 이고
 | G3 | 02 §5.1 | `prl_`(policy_rules) / `rul_`(protection_rules) | 반영됨 |
 | G4 | 02 §5.6 | Item `blocked_reasons`·`origin_root_kind`·`is_dataless` | 반영됨(`icloud_synced`) |
 | G5 | 06 `scan_runs.stats_json` | `warning_codes` | 반영됨 |
-| G6 | 02 §5.4 | 진행 이벤트 `phase` 에 `migrate` 없음 | **남음**(낮음) — serve 기동 마이그레이션 중 진행 이벤트를 내지 않는 것으로 처리 |
+| G6 | 02 §5.4 | serve 기동 마이그레이션 | 반영됨(진행 이벤트 없음, 실패 시 `ready` 대신 `E_DB_MIGRATION` 봉투) |
+| G18 | 02 §5.3 | 모든 목록 명령의 `--limit N`/`--cursor C`, `rule remove RUL_ID`·`suppression list` 시그니처 | 반영됨 |
 | G7 | 02 §11 | AI 공급자 오류 | 반영됨(`W_AI_REQUEST_FAILED`, `W_AI_OUTPUT_REJECTED`) |
 | G8 | 02 §5.3 | `ai.key.set/remove` | 반영됨 |
 | G9 | 02 §10.3·§6, 08 | 승인 경로 강화(서명 기반 `app_button`, 에이전트 표식, `run_tool` 절대경로, apply 시 해시 재계산·감사 교차·24시간, iCloud 전파 확인) | 반영됨(Secure Enclave 서명, 08 §6.5) |

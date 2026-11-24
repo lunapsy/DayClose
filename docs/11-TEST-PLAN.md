@@ -279,6 +279,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_icloud_gate_constant_false_without_record` | 저장소의 `TRASH_UNLOCK_VERIFIED` 가 `True` 이면 `docs/09-MACOS-INTEGRATION.md` §12 의 iCloud 휴지통 검증 행(V18~V21)이 두 기기 모두 `ok` 로 채워져 있어야 통과(08 §9.1 `test_icloud_gate_requires_verification_record` 와 같은 테스트 — 이름은 08 을 따른다). 검증 기록이 없는 지금은 상수가 `False` 여야 녹색 |
 | `test_config_allow_trash_owner_only` | `config set icloud.allow_trash false` 는 `cli`(에이전트 표식 없음)에서 성공, `--channel skill`·에이전트 표식 승격·serve `channel=mcp` 에서는 `E_PROTECTED{reason:"owner_only_key"}`. MCP 도구 목록에 `config_set` 없음 |
 | `test_root_icloud_override_precedence` | `root add --icloud-synced yes` → 신호 없어도 `icloud_synced=1`, `source=user`; `--icloud-synced no` → 감지 신호(심볼릭 링크 실제 경로가 iCloud 아래)가 있어도 0, `source=user`; `auto` → 04 판정, `source=detected` |
+| `test_root_icloud_live_signal_beats_no` | `root set --icloud-synced no` 인 `desktop` 루트인데 실시간 양성 신호(S1: 루트 `realpath` 가 `~/Library/Mobile Documents/` 아래, 또는 S2: `CloudDocs/Desktop` 존재) → `allowed_actions` 에 `move/archive` 없음(`icloud_synced`), `plan.create` 의 `trash` 연산은 `icloud_propagates=true`, 계획 후 신호가 생긴 경우 실행 직전 `skipped` `E_PROTECTED{reason:"icloud_synced",source:"live_signal"}`(08 §9.2). 신호가 하나도 없을 때만 `no` 가 효력 |
 | `test_root_icloud_assumed_default` | `auto` 이고 신호가 없는 `desktop`·`documents` 루트 → `icloud_synced=1`, `source=assumed`; 같은 조건의 `downloads` 루트 → 0, `detected`. `root.list` 가 루트마다 세 값을 모두 반환 |
 | `test_root_set_reevaluates_items` | `root set ROOT_ID --icloud-synced yes` → 그 루트 열린 항목의 `allowed_actions` 즉시 재계산, 새로 막힌 동작의 기존 결정 철회(`proposed`). 인자 없는 `root set` → `E_USAGE` |
 | `test_root_set_not_in_mcp` | MCP `tools/list` 에 `root_set` 없음, Skill `allowed-tools` 에 `root set` 패턴 없음 |
@@ -306,6 +307,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_fake_osascript_on_path_not_executed` | `PATH` 맨 앞에 `$SANDBOX/evil/`(가짜 `osascript`·`defaults` — 실행되면 표식 파일을 씀)를 두고 `run_tool('defaults', …)` 와 승인 경로를 실행 → 표식 파일 없음. 실행된 경로는 `$SANDBOX/bin/…` 또는 `system_path` 의 절대경로뿐(호출 기록으로 확인). 단위: 샌드박스가 아닐 때 `system_path('osascript') == '/usr/bin/osascript'`(실행 없음). |
 | `test_apply_rejects_unaudited_approval` | `approvals` 행을 DB 에 직접 넣고(감사 행 없음) apply → `E_APPROVAL_REQUIRED{reason:"approval_not_audited"}`, 트리 불변(08 G5). |
 | `test_apply_rejects_expired_approval` | `DAYCLOSE_TEST_NOW` 로 승인 후 24시간+1초 → apply 와 재개 모두 `E_APPROVAL_REQUIRED{reason:"approval_expired"}`(08 G6). |
+| `test_mcp_tools_exact_exposed_set` | `tools/list` 이름 집합 == {`core_version`, `core_doctor`, `config_get`, `config_list`, `root_list`, `scan_run`, `scan_list`, `scan_show`, `change_list`, `review_summary`, `review_close`, `group_list`, `group_show`, `item_list`, `item_show`, `decision_set`, `decision_undo`, `decision_list`, `vault_list`, `vault_show`, `vault_health`, `app_list`, `package_list`, `project_list`, `report_daily`, `rule_list`, `suppression_list`, `plan_create`, `plan_show`, `plan_list`, `plan_cancel`, `audit_list`, `policy_suggestions`, `ai_status`} — 정확히 같음(02 §10.3-3). 02 §5.3 에 명령이 추가되면 이 집합을 함께 고쳐야 테스트가 통과(의도된 마찰) |
+| `test_skill_allowed_tools_match_exposed` | SKILL.md `allowed-tools` 의 모든 `Bash(dayclose … *)` 패턴이 위 노출 집합의 CLI 형태 안에 있고, `plan approve`·`plan apply`·`schema`·`root add/set/remove`·`rule add`·`suppression add`·`config set`·`init` 은 어떤 패턴에도 일치하지 않음 |
 | `test_mcp_has_no_approval_tools` | MCP `tools/list` 의 이름 집합 ∩ 02 §10.3 비노출 목록(`plan_approve`, `plan_apply`, `plan_undo`, `plan_recover`, `core_app_key`, `core_init`, `config_set`, `root_add`, `root_remove`, `root_set`, `rule_add`, `rule_remove`, `suppression_add`, `suppression_remove`, `policy_accept`, `policy_reject`, `ai_key_set`, `ai_key_remove`, `ai_classify`, `vault_annotate`, `core_schema`, `core_serve`, `mcp_serve`) = ∅, 그리고 노출 목록 = 02 §5.3 전체 − 02 §10.3 비노출 목록(FR-EX-002, FR-AG-003). |
 
 ### 4.2 S2 — 보호 등급 항목은 파괴적 연산에 들어가지 않는다
@@ -597,6 +600,10 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 ---
 
+### 9.5a 사람만 수행하는 항목
+
+09 V8·V18·V19 와 §9.4 의 iCloud 휴지통 실기기 확인은 **소유자가 직접 만든 테스트 파일**로 소유자가 수행한다. 에이전트는 절차를 안내하고 결과 기록 양식을 채우는 것만 돕고, 실제 파일 조작·전파 확인을 하지 않는다. 따라서 M5 는 에이전트 혼자 종료할 수 없다(종료 PR 에 소유자 확인 기록 필수).
+
 ### 9.6 기기별 기록 양식
 
 | 항목 | MacBook | Mac mini |
@@ -755,7 +762,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | 02 §6, 04, 08, 09 | 고정 시스템 경로는 `common/paths.system_path(name)` 경유(§2.3 표) | 02 반영됨, 04·09 의 경로 목록과 §2.3 표 대조 필요 |
 | 02 §14 | `app/DayCloseUITests/` | 반영됨 |
 | 08 | apply 시 해시 재계산·감사 교차·24시간 | 반영됨(08 §7.1 G4~G6) |
-| 08 | **체크포인트 이름 목록**(§6.1 F01~F05·F20·F29·F40 이 쓰는 `op.running_committed`, `op.fs_done`, `xdev.copy_partial`, `xdev.verified`, `xdev.src_removed`, `undo.undoing_committed`, `undo.fs_done`, `migrate.mid`) | **남음** — 08 에 이름이 없다. 08 이 다른 이름을 정하면 그쪽을 쓴다 |
+| 08 | **체크포인트 이름 목록**(§6.1 F01~F05·F20·F29·F40 이 쓰는 `op.running_committed`, `op.fs_done`, `xdev.copy_partial`, `xdev.verified`, `xdev.src_removed`, `undo.undoing_committed`, `undo.fs_done`, `migrate.mid`) | **제안**(08 에 이름 정의 없음, 2026-11-24 재확인) — 08 이 정하면 그 이름으로 바꾼다 |
 | 04 | `collect/fs` 의 `lstat` 대체 지점(dataless `st_flags` 주입, §3.9) | **남음**(확인 필요) |
 | 05 | 시드 단어 목록 모듈 위치, 합성 주민등록번호 검증 규칙 | **남음**(확인 필요) |
 | 03 | 갤러리 스크롤 성능의 측정 지표·수치 | **남음**(확인 필요) |
