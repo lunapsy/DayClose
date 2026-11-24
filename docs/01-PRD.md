@@ -55,7 +55,7 @@ Local-first · AI optional · Human-in-the-loop · Reversible · Incremental · 
 **FR-CORE-001 — 초기화.** `dayclose init` 이 상태 디렉터리·DB·설정을 만든다(필드 암호화 키는 M2 부터 함께 생성).
 AC: 두 번 실행해도 결과 동일(멱등), 기존 데이터 보존. `DAYCLOSE_HOME` 권한 0700, DB 0600. M1.
 
-**FR-CORE-002 — 기본 스캔 루트.** init 시 `~/Downloads`(downloads), `~/Desktop`(desktop), 스크린샷 저장 위치(`defaults read com.apple.screencapture location`, Desktop 과 다를 때만, screenshots), `~/Documents`(documents), iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs`(icloud_drive), `~/dev`(projects, 파일 단위 항목 없음)를 등록한다. `--no-default-roots` 로 생략.
+**FR-CORE-002 — 기본 스캔 루트.** init 시 `~/Downloads`(downloads), `~/Desktop`(desktop), 스크린샷 저장 위치(`defaults read com.apple.screencapture location`, Desktop 과 다를 때만, screenshots), `~/Documents`(documents), iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs`(icloud_drive), `~/dev`(projects, 파일 단위 항목 없음)를 등록한다. Xcode `~/Library/Developer/Xcode/DerivedData` 가 있으면 `custom` 루트(파일 단위 항목 없음, 깊이 1 — 개발 캐시 탐지용, M3 부터 사용)로 함께 등록. `--no-default-roots` 로 생략.
 AC: 존재하지 않는 경로는 등록하지 않고 경고. 기본 루트는 모두 홈 기준이며 `/Volumes/*` 를 기본으로 등록하지 않음(기기별 구성은 사용자가 `root add`). `root add/remove/list` 동작. 겹치는 루트(데스크탑·문서 iCloud 동기화)에서 같은 파일이 두 번 기록되지 않음. M1.
 
 **FR-CORE-003 — 증분 변경 감지.** `scan run` 은 직전 상태와 비교해 생성·수정·삭제·이동을 기록한다. 이동은 (dev, inode) 일치로 판정한다.
@@ -70,8 +70,8 @@ AC: TCC 거부(EPERM)와 일반 권한 오류를 구분. M1.
 **FR-CORE-006 — 멈추지 않는 스캔.** `/Volumes/*` 아래 경로는 시간 제한 프로브 후 접근하며, 시간 초과 시 그 루트를 건너뛰고 경고한다.
 AC: 프로브가 응답하지 않는 모의 경로에서 `scan run` 이 `volume_probe_timeout_s`+2초 안에 `W_ROOT_UNAVAILABLE` 로 끝남. M1.
 
-**FR-CORE-008 — iCloud 자리표시자 보존.** 스캔·vault·OCR·미리보기 어느 단계도 미다운로드(dataless, `.icloud` 자리표시자) 파일을 다운로드시키지 않는다(02 §10.6). 이런 파일과 iCloud Drive 항목에는 `trash/move/archive` 를 제공하지 않는다.
-AC: `SF_DATALESS` 플래그를 흉내 낸 픽스처(플래그 판정 함수 주입)에 대해 open/read 호출 0(감시 래퍼로 검증), sha256 NULL, `W_DATALESS_SKIPPED` 집계, `allowed_actions` 에 trash/move/archive 없음. M1(스캔), M3(vault), M4(미리보기).
+**FR-CORE-008 — iCloud 자리표시자 보존.** 스캔·vault·OCR·미리보기 어느 단계도 미다운로드(dataless, `.icloud` 자리표시자) 파일을 다운로드시키지 않는다(02 §10.6). 이런 파일과 **iCloud 동기화 경로**의 항목(iCloud Drive 루트, 그리고 “데스크탑 및 문서 폴더” 동기화가 켜진 `~/Desktop`·`~/Documents` — 02 §10.1 예외 2)에는 `trash/move/archive/rename` 을 제공하지 않는다. 다운로드된 iCloud 동기화 파일의 휴지통은 FR-EX-008(C11)의 조건으로만 열린다.
+AC: `SF_DATALESS` 플래그를 흉내 낸 픽스처(플래그 판정 함수 주입)에 대해 open/read 호출 0(감시 래퍼로 검증), sha256 NULL, `W_DATALESS_SKIPPED` 집계, `allowed_actions` 에 trash/move/archive 없음, `blocked_reasons` 에 `dataless`/`icloud_synced`. M1(스캔), M2(허용 동작·iCloud 동기화 판정), M3(vault), M4(미리보기).
 
 **FR-CORE-007 — 쓰기 직렬화.** 쓰기 명령 동시 실행 시 하나만 진행, 나머지는 대기 후 `E_LOCKED`.
 AC: 동시 `scan run` 2개 → 하나 성공, 하나 `E_LOCKED`(대기 0초 설정 시). M1.
@@ -124,7 +124,7 @@ AC: 저장소 내부 파일에 `trash`/`move` 결정 시 `E_PROTECTED`. M2.
 **FR-SO-005 — AI 문맥 분류(선택).** AI 활성 시 `ai_policy` 가 허용하는 항목의 메타데이터로 작업 그룹·목적지를 제안한다. AI 비활성에서도 모든 기능 동작.
 AC: `ai.enabled=false` 에서 네트워크 호출 0. `patient`/`secret` 항목은 페이로드에 없음(게이트 테스트). M6.
 
-**FR-SO-006 — 스크린샷 OCR.** 스크린샷을 로컬 Vision OCR 로 분류·이름 변경 제안(`rename`). OCR 텍스트는 암호화 저장, 외부 전송 금지(로컬 모델만, 민감 판정 시 금지).
+**FR-SO-006 — 스크린샷 OCR.** 스크린샷을 로컬 Vision OCR 로 분류·이름 변경 제안(제안 동작 `rename`, 사용자가 `decision.set --action rename --dest <같은 폴더의 새 경로>` 로 결정 → plan 의 `rename` 연산). OCR 텍스트는 암호화 저장, 외부 전송 금지(로컬 모델만, 민감 판정 시 금지).
 AC: OCR 결과에 주민등록번호 패턴 → 항목 `sensitivity=patient`. M6.
 
 ### 5.4 Visual Review (FR-VR) — 화면 세부는 03 문서
@@ -161,8 +161,8 @@ AC: `brew` 없으면 `W_TOOL_MISSING` 후 계속. 테스트는 `brew` 출력 픽
 **FR-AM-003 — Git 프로젝트 상태.** `projects.roots` 아래 저장소의 미커밋 변경 수, 90일 이상 오래된 로컬 브랜치 수를 결산에 표시(`git_repo` 항목, `acknowledge` 만).
 AC: 미커밋 파일 있는 샌드박스 저장소 → 항목 1개, dirty_count 정확. M2.
 
-**FR-AM-004 — 로그인 항목(주간).** 새 LaunchAgent/LaunchDaemon/로그인 항목 감지.
-AC: `~/Library/LaunchAgents` 에 새 plist → 항목 생성. 주 1회만 수집(설정). M3.
+**FR-AM-004 — 백그라운드 항목(주간).** 새 LaunchAgent/LaunchDaemon **plist** 감지(`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`). 결정(2026-11-24): 시스템 설정의 “로그인 항목”(BTM)은 macOS 에 목록 조회 공개 API 가 없어 수집하지 않는다.
+AC: `~/Library/LaunchAgents` 에 새 plist → 항목 생성(`subject_type=login_item`). 주 1회만 수집. M3.
 
 **FR-AM-005 — 개발 캐시(주간).** `node_modules`, `DerivedData`, `.build` 등 용량 큰 재생성 가능 산출물 표시(크기순).
 AC: 비활성 저장소의 캐시만 `trash` 제안. M3.
@@ -196,15 +196,15 @@ AC: `tracked_in_git` 발견 사항 문구에 폐기·재발급 권고 포함, �
 **FR-SV-008 — 시드 구문 비수집.** 암호화폐 시드·복구 구문 의심 파일은 존재·위치만 경고하고 지문·내용 등 어떤 파생값도 저장하지 않는다.
 AC: 시드 의심 픽스처 → `crypto_seed_suspected`, `fingerprint_sha256` NULL, 로그에 경로 없음. M3.
 
-**FR-SV-009 — (삭제 2026-11-24)** NAS 암호화 백업은 비목표로 이동(§7). ID 는 재사용하지 않는다. 보안 자산의 `backup_status` 는 사용자 표시로만 갱신(§9 O2).
+**FR-SV-009 — (삭제 2026-11-24)** NAS 암호화 백업은 비목표로 이동(§7). ID 는 재사용하지 않는다. 보안 자산의 `backup_status` 는 사용자 표시로만 갱신(§9 C10).
 
 ### 5.7 Safe Execution (FR-EX) — 세부는 08 문서
 
 **FR-EX-001 — 계획.** 결정된 항목(trash/move/archive)으로 불변 `draft` 계획을 만들고 `plan_hash` 를 계산한다.
 AC: 같은 입력 → 같은 해시. 계획 생성은 파일을 바꾸지 않음. M5.
 
-**FR-EX-002 — 사람 승인.** 승인은 앱 버튼, TTY 확인 입력, 네이티브 확인 대화상자 중 하나로만 가능하다. 에이전트는 승인할 수 없다.
-AC: 비 TTY·대화상자 거부 → `E_APPROVAL_DENIED`. 해시 불일치 → `E_APPROVAL_MISMATCH`. MCP 에 approve 도구 없음. M5.
+**FR-EX-002 — 사람 승인.** 승인은 앱 버튼(Secure Enclave 서명 + Touch ID/암호, 검증 전까지는 대화상자로 저하), TTY 확인 입력, 네이티브 확인 대화상자 중 하나로만 가능하며 수단은 core 가 환경으로 고른다(02 §10.3). 복사된 DB(다른 Mac)는 파일 변경 명령이 `E_DEVICE_MISMATCH` 로 거부된다. 에이전트는 승인을 **요청**할 수 있지만 **수행**할 수 없다: 에이전트 환경 표식이 있으면 대화상자로 강제, 실행 시 해시 재계산·감사 교차 검사·24시간 유효 기간. 무인 Mac mini 에서는 사람이 그 Mac 앞(또는 화면 공유, 또는 사람이 직접 입력하는 SSH TTY)에 있을 때만 승인된다.
+AC: 비 TTY·대화상자 거부 → `E_APPROVAL_DENIED`. 해시 불일치 → `E_APPROVAL_MISMATCH`. 에이전트 표식 + TTY → 대화상자 경로. 승인 행만 DB 에 직접 넣은 계획 → apply 가 `E_APPROVAL_REQUIRED{approval_not_audited}`. 24시간 지난 승인 → `E_APPROVAL_REQUIRED{approval_expired}`. MCP 에 approve·apply 도구 없음. M5.
 
 **FR-EX-003 — 실행 전 재검증.** 연산 직전 파일 identity·크기·mtime 와 보호 정책을 다시 확인한다.
 AC: 계획 후 파일을 수정하면 해당 연산 `skipped`, 항목 `stale`, 나머지는 계속. M5.
@@ -215,8 +215,11 @@ AC: 코드베이스에 executor 밖 파일 변경 호출 0(정적 검사). 휴�
 **FR-EX-005 — 이동·보관.** 같은 볼륨은 rename, 다른 볼륨은 복사→검증(크기+SHA-256)→원본 제거. 목적지 덮어쓰기 금지.
 AC: 샌드박스 두 볼륨(디스크 이미지 또는 모의) 간 이동 후 해시 일치, 실패 주입 시 원본 보존. M5.
 
-**FR-EX-006 — Undo 와 복구.** 계획 단위·연산 단위 되돌리기. 실행 중 크래시 후 `plan recover` 가 실제 파일 상태로 정합화.
+**FR-EX-006 — Undo 와 복구.** 계획 단위·연산 단위 되돌리기. 실행 중 크래시 후 `plan recover` 가 실제 파일 상태로 정합화. 실행 중 멈춤은 신호(Ctrl-C/앱 [중지])로만, 결과는 재개 가능한 `E_PARTIAL`. 휴지통이 비워졌으면 `E_UNDO_IMPOSSIBLE{trash_emptied}`.
 AC: apply 도중 프로세스 강제 종료 → recover 후 모든 연산이 `done`/`pending`/`failed` 중 실제와 일치, 파일 유실 0. M5.
+
+**FR-EX-008 — iCloud 동기화 파일 휴지통(C11).** 다운로드된(dataless 아님) iCloud 동기화 경로 파일은 항목 단위 `trash` 결정을 할 수 있고, 그 연산은 `icloud_propagates=1` 로 계획에 들어가 승인 화면에 “N개 파일은 다른 기기에서도 삭제됩니다”가 별도 줄로 표시된다. 효력은 08 §9.1 실기기 검증 후 코드 게이트를 켠 뒤부터, 설정 `icloud.allow_trash=false` 면 끔.
+AC: 게이트 거짓 → `allowed_actions` 에 trash 없음, `blocked_reasons.trash=icloud_synced`. 게이트 참 → 다운로드된 파일은 trash 허용, dataless 는 `blocked_reasons.trash=dataless`, move/archive/rename 은 `icloud_synced`(v1 불가). `root set --icloud-synced no` 여도 경로·dataless 양성 신호가 있으면 iCloud 로 취급. 그룹 결정·`actor=rule` 결정이 iCloud 항목을 trash 에 넣지 않음(`W_PROTECTED_SKIPPED`). `icloud_propagates` 를 바꾸면 `plan_hash` 가 바뀜. `icloud_ack=0` 승인으로 apply → `E_APPROVAL_REQUIRED{icloud_ack_missing}`. 실행 직전 dataless 가 된 파일 → `skipped E_PROTECTED`. M5.
 
 **FR-EX-007 — 실행 이력.** 모든 쓰기 명령은 감사 로그에, 모든 연산은 `plan_operations` 에 남는다.
 AC: `audit list` 로 누가(channel) 무엇을 언제 했는지 확인 가능, 경로·비밀 없음. M5.
@@ -248,7 +251,7 @@ AC(공통): launchd 실행과 셸 실행 결과 비교 테스트 절차(09 문�
 
 ### 5.10 Archive (FR-AB)
 
-**FR-AB-001 — 보관 폴더.** `config.archive.root`(로컬 또는 외장, 예 `/Volumes/External/DayCloseArchive`) 하나를 `archive` 결정의 목적지로 쓴다. 배치 `<root>/<YYYY>/<MM>/<원래 이름>`. 외장 경로는 프로브 경유, 볼륨 간이면 복사→검증→원본 제거. undo 는 원위치 이동.
+**FR-AB-001 — 보관 폴더.** (암호화되지 않은 볼륨이면 경고 `W_ARCHIVE_UNENCRYPTED`, 차단 안 함 — C14) `config.archive.root`(로컬 또는 외장, 예 `/Volumes/External/DayCloseArchive`) 하나를 `archive` 결정의 목적지로 쓴다. 배치 `<root>/<YYYY>/<MM>/<원래 이름>`. 외장 경로는 프로브 경유, 볼륨 간이면 복사→검증→원본 제거. undo 는 원위치 이동.
 AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상태에서 apply → `E_VOLUME_UNAVAILABLE`, 원본 보존. M5.
 **FR-AB-002 — (삭제 2026-11-24)** NAS 보관 → 비목표.
 **FR-AB-003 — (삭제 2026-11-24)** 원격 암호화 보관 → 비목표.
@@ -257,7 +260,7 @@ AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상�
 
 **FR-AG-001 — CLI 가 1급 인터페이스.** 앱이 하는 모든 일(승인 제외 수단은 §FR-EX-002)을 CLI 로 할 수 있다. M1~.
 **FR-AG-002 — Skill.** Claude Code·Codex 공용 `skill/SKILL.md`: 결산 조회 → 요약 제시 → 결정 기록 → 계획 생성 → 사용자에게 승인 요청(대화상자) 흐름. M8.
-**FR-AG-003 — MCP.** `dayclose mcp serve` 가 읽기·결정·계획 생성 도구를 노출. 승인·undo·보호 해제는 비노출. M8.
+**FR-AG-003 — MCP.** `dayclose mcp serve` 가 읽기·결정(`decision.undo` 포함)·계획 생성 도구를 노출. 파일 변경·승인과, DayClose 가 무엇을 보고 어떻게 보호하는지를 바꾸는 명령(범위·설정·보호 규칙·suppression·학습 규칙·키·vault 기록)은 비노출 — 목록은 02 §10.3-3. M8.
 
 ## 6. 비기능 요구사항
 
@@ -313,9 +316,13 @@ AC: `archive.root` 미설정 시 `E_ARCHIVE_TARGET_MISSING`. 외장 분리 상�
 | C7 | 공개·라이선스 | 유료화 계획 없음. **MIT 라이선스**(`LICENSE`, © 2026 Lunap Lee), 공개 저장소 `lunapsy/DayClose`. 결과: GPL/AGPL 코드는 복사 불가, 외부 도구로 호출만 | 02 §3, AGENTS.md, 13 |
 | C8 | 서명·공증 | Developer ID 서명·공증 안 함(개인 로컬 빌드). 결과: 재빌드 시 FDA 승인이 풀릴 수 있음 → 고정된 로컬 서명 인증서로 서명, M7 에서 재빌드 후 FDA 유지 실기기 검증 | 02 §4, 12 M7 |
 | C9 | Mac mini 사용 | MacBook·Mac mini 둘 다 사용. **두 개의 독립 설치**: 기기마다 자체 `DAYCLOSE_HOME`·DB·`config.toml`(스캔 루트·`archive.root` 는 기기별)·학습 규칙. `device_id` 로 기기 식별. 동기화·병합 없음(비목표). 결과: ① 한 기기에서 학습한 규칙·suppression 은 다른 기기가 모름 ② 같은 iCloud Drive 파일이 두 기기의 리뷰에 각각 나타남(이미 keep/keep_always/defer 만 허용) ③ 기본값은 디스크 구성을 가정하지 않음(Mac mini 는 작은 내장 + `/Volumes/External`) ④ 개발 기기는 Mac mini | FR-CORE-002, §7, 02 §8.1, 06 §1, 12 |
+| C10 | 보안 자산 “백업됨” 기준 (구 O2) | 사용자가 `vault annotate --backup verified` 로 표시한 경우만 `verified`, 그 외 `unknown` | FR-SV-006, 02 §5.3 |
+| C11 | iCloud 동기화 경로의 휴지통 (구 O3 — 기본값에서 **변경**) | 허용한다. 단 ① `trash` 만, ② 다운로드된 파일만(dataless 는 계속 불가), ③ `move`/`archive`/`rename` 은 v1 에서 불가(08 §9.1 결론 — 여는 것은 새 소유자 결정), ④ 계획 단위 명시 확인 — 승인 화면이 “다른 기기에서도 삭제됨”을 보여 주고 그 사실이 `plan_hash` 와 승인 기록(`icloud_ack`)에 들어감, ⑤ 항목 단위 결정만(그룹·학습 규칙 결정에 포함 안 됨), ⑥ 08 §9.1 실기기 검증 통과 후에만 효력(M5 종료 기준), 그 전에는 지금처럼 차단 | FR-EX-008, 02 §10.1 예외 2·§10.3 7, 06 §5.4 |
+| C12 | 승인 시 Touch ID/로그인 암호 (구 O4) | M7 에서 LocalAuthentication 도입, **승인할 때마다** 인증. 앱 승인은 Secure Enclave 서명(서명마다 인증), 대화상자 승인도 `dayclose-native confirm` 으로 교체 | FR-EX-002, 02 §10.3, 12 M7 |
+| C13 | 승인 유효 기간 (구 O5) | 24시간 | 02 §10.3 5 |
+| C14 | `archive.root` 암호화 볼륨 제한 (구 O6) | 제한하지 않음. 암호화되지 않은 볼륨이면 경고(`W_ARCHIVE_UNENCRYPTED`) | FR-AB-001, 02 §11 |
+| C15 | 에이전트에게 보이는 이름 (구 O7) | `normal`·`personal` 항목 이름은 보임, `patient`/`secret` 만 null | 02 §5.6 |
 
-### 9.2 미결 사항 (소유자 확인 필요)
+### 9.2 미결 사항
 
-| # | 질문 | 현재 기본값 |
-|---|---|---|
-| O2 | 보안 자산을 “백업됨”으로 볼 기준 | 사용자가 `vault annotate` 로 표시한 경우만 `verified`, 그 외 `unknown`. NAS 사본 검증은 비목표로 제외됨 |
+없음(2026-11-24 기준). 새 질문은 이 절에 `O<n>` 으로 추가한다.

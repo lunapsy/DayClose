@@ -1,7 +1,7 @@
 # 05 — Secure Vault (보안 자산 탐지·인벤토리·건강 점검)
 
 > 범위: `core/src/dayclose/vault/` 모듈과, 그 결과를 쓰는 `policy`(보호 등급 판정)·`executor`(자산 차단)의 규칙 근거.
-> 이름·enum·테이블·명령·오류 코드는 `02-ARCHITECTURE.md`, `06-DATA-MODEL.md` 를 그대로 쓴다. 이 문서는 그것들을 새로 만들지 않는다. 기준 문서에 없는 것이 필요하면 §19 에 “02/06 변경 요청”으로 적었다.
+> 이름·enum·테이블·명령·오류 코드는 `02-ARCHITECTURE.md`, `06-DATA-MODEL.md` 를 그대로 쓴다. 이 문서는 그것들을 새로 만들지 않는다. 이 문서가 요청했던 기준 문서 변경의 반영 상태는 §19.2.
 > 관련: 수집 파이프라인 순서·dataless 판정은 `04-FILE-INTELLIGENCE.md`, 실행 차단은 `08-SAFE-EXECUTION.md`, 민감도→AI 게이트는 `07-AI-MEMORY-POLICY.md`, 명령 `data` 스키마의 최종 레퍼런스는 `10-CLI-SKILL-MCP.md`, 픽스처·누출 스캐너는 `11-TEST-PLAN.md`.
 > 마일스톤: 전부 M3(읽기 전용). 이 문서의 어떤 기능도 사용자 파일을 바꾸지 않는다(§16 에서 증명 방법을 정한다).
 
@@ -64,7 +64,7 @@ vault 는 `scan.run` 의 `phase=vault` 단계로 실행된다(04 §0 의 4단계
 #### 2.1.1 `vault_extra` 루트 등록
 
 - `core.init` 과 매 `scan.run` 시작 시 `config.vault.extra_paths` 를 동기화한다: 각 항목을 `~` 확장 → `os.path.realpath` 하지 **않고**(사용자가 적은 경로 그대로) `lstat` 해서 디렉터리이면 `scan_roots(kind='vault_extra', file_level=0, max_depth=4)` 로 등록(이미 있으면 그대로), 없으면 등록하지 않고 경고 없음(대부분의 사람은 `~/.kube` 등이 없다). 설정에서 빠진 경로의 루트는 `removed_at` 설정.
-- 기본값(02 §9): `~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.kube`, `~/.gnupg`, `~/Library/Preferences/NPKI`.
+- 기본값(02 §9): `~/.ssh`, `~/.aws`, `~/.azure`, `~/.docker`, `~/.config/gh`, `~/.config/gcloud`, `~/.kube`, `~/.gnupg`, `~/Library/Preferences/NPKI`.
 - `scan.exclude_globs` 의 `**/Library/**` 는 **루트 기준 상대경로**에 매칭된다(02 §9 주석). 따라서 루트 자체가 `~/Library/Preferences/NPKI` 인 경우 그 아래는 제외되지 않는다. 이 성질에 의존한다 — 04 가 glob 기준을 바꾸면 이 루트가 깨진다(11 문서의 회귀 테스트 `test_npki_root_not_excluded`).
 - `vault_extra` 루트 순회에서도 `**/.git/**` 제외는 유지한다.
 
@@ -72,9 +72,11 @@ vault 는 `scan.run` 의 `phase=vault` 단계로 실행된다(04 §0 의 4단계
 
 홈 디렉터리 바로 아래 파일들은 어떤 루트에도 속하지 않는다. vault 는 아래 고정 목록을 매 run 마다 `lstat` 하고(디렉터리 순회 없음), 존재하는 일반 파일만 검사한다. 이 경로들의 자산은 `entry_id = NULL`(06: `vault_assets.entry_id` nullable)이고 경로로 식별한다.
 
-`~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`, `~/.pgpass`, `~/.my.cnf`, `~/.mylogin.cnf`, `~/.docker/config.json`, `~/.config/gh/hosts.yml`, `~/.azure/accessTokens.json`, `~/.azure/msal_token_cache.json`, `~/.azure/msal_token_cache.bin`, `~/.android/debug.keystore`, `~/.gradle/gradle.properties`, `~/.config/solana/id.json`.
+`~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`, `~/.pgpass`, `~/.my.cnf`, `~/.mylogin.cnf`, `~/.android/debug.keystore`, `~/.gradle/gradle.properties`, `~/.config/solana/id.json`.
 
-결정: 이 목록은 설정이 아니라 코드 상수(`vault/locations.py`)다. 이유: 사용자가 비울 이유가 없고, 설정 키를 늘리면 02 §9 를 바꿔야 한다. `~/.azure` 를 `extra_paths` 기본값에 넣는 것은 02 변경 요청(§19)으로 남긴다.
+(`~/.azure`, `~/.docker`, `~/.config/gh` 는 02 §9 의 `extra_paths` 기본값이라 `vault_extra` 루트로 들어온다 — 이 목록에 넣지 않는다.)
+
+결정: 이 목록은 설정이 아니라 코드 상수(`vault/locations.py`)다. 이유: 사용자가 비울 이유가 없고, 디렉터리가 아닌 단일 파일이라 `scan_roots` 로 표현할 수 없다.
 
 ### 2.2 후보 클래스
 
@@ -208,7 +210,7 @@ PEM 헤더 정규식(바이트, 줄 시작 기준, 파일 어디에 있어도 �
 | GCP 서비스 계정 | 모든 `.json`(클래스 A: 이름에 `service-account`, `serviceaccount`, `-sa-`, `firebase-adminsdk`, `credentials`, `gcp`, `gcloud`; 클래스 B·C: 전부) | JSON 객체, `type == "service_account"` 이고 `private_key` 와 `client_email` 키 존재 |
 | GCP 사용자 자격 | `~/.config/gcloud/application_default_credentials.json`, `legacy_credentials/*/adc.json`, `credentials.db`, `access_tokens.db` | JSON: `type ∈ {"authorized_user","external_account","impersonated_service_account"}` + `refresh_token`/`credential_source`. `.db`: 앞 16바이트 `SQLite format 3\0` (SQLite 파일은 열지 않는다 — 헤더 바이트만) |
 | Firebase Admin | GCP 서비스 계정과 같음(`client_email` 이 `firebase-adminsdk` 포함이면 표시 종류 문구만 “Firebase Admin”) | 같음 |
-| Azure | §2.1.2 의 `~/.azure/*` 토큰 캐시, 서비스 주체 JSON | 토큰 캐시: JSON 이고 `AccessToken`/`RefreshToken` 최상위 키(또는 `.bin` 은 이름만, confidence 0.7). 서비스 주체: JSON 에 `appId`·`tenant`·(`password` 또는 `clientSecret`) |
+| Azure | `~/.azure`(`vault_extra`) 안의 `accessTokens.json`, `msal_token_cache.json`, `msal_token_cache.bin`, 서비스 주체 JSON | 토큰 캐시: JSON 이고 `AccessToken`/`RefreshToken` 최상위 키(또는 `.bin` 은 이름만, confidence 0.7). 서비스 주체: JSON 에 `appId`·`tenant`·(`password` 또는 `clientSecret`) |
 | Kubernetes | `~/.kube/config`, `kubeconfig*`, `*.kubeconfig` | YAML 텍스트에 `^\s*(client-key-data|token|client-certificate-data|password)\s*:` 가 있음. `apiVersion`/`clusters:` 만 있고 위 키가 없으면 비자산 |
 
 - 크기 상한: 1 MiB(`.db` 는 헤더 16바이트만 읽음).
@@ -312,8 +314,8 @@ PEM 헤더 정규식(바이트, 줄 시작 기준, 파일 어디에 있어도 �
 | `.git-credentials` | 이름 | `^https?://[^:\s]+:[^@\s]+@` 1줄 이상 |
 | `.npmrc` | 이름 | `_authToken\s*=` 또는 `_auth\s*=` 또는 `_password\s*=` |
 | `.pypirc` | 이름 | `[pypi]`/`[distutils]` + `password\s*[=:]` |
-| Docker | `~/.docker/config.json` | JSON `auths.*.auth` 비어 있지 않음(credsStore 만 있으면 비자산) |
-| GitHub CLI | `~/.config/gh/hosts.yml` | `oauth_token:` |
+| Docker | `~/.docker/config.json`(`vault_extra`) | JSON `auths.*.auth` 비어 있지 않음(credsStore 만 있으면 비자산) |
+| GitHub CLI | `~/.config/gh/hosts.yml`(`vault_extra`) | `oauth_token:` |
 | OAuth 클라이언트 | `client_secret*.json`, `credentials.json` | JSON `installed` 또는 `web` 객체에 `client_secret` |
 | OAuth 토큰 | `token.json`, `token.pickle`(이름만 0.6) | JSON 에 `refresh_token` |
 | htpasswd | `.htpasswd` | 줄 `^[^:\s]+:(\$apr1\$|\$2[aby]\$|\{SHA\}|[./0-9A-Za-z]{13}$)` |
@@ -392,7 +394,7 @@ gitleaks 가 없어도 FR-SV-002 를 만족하기 위한 최소 집합. 정규�
 
 결정: `gitleaks dir <경로>` 가 아니라 **`gitleaks stdin`** 으로, 파일 하나당 1회, vault 가 §2.3 으로 읽은 바이트를 파이프로 넘긴다. 이유: (1) gitleaks 가 사용자 파일 시스템을 직접 열지 않으므로 심볼릭 링크·dataless·FIFO·TCC 처리를 vault 한 곳이 통제한다. (2) 파일 경로가 argv(프로세스 목록)에 나타나지 않는다. (3) 대상 디렉터리의 `.gitleaks.toml`/`.gitleaksignore` 가 개입할 수 없다.
 
-argv(고정, `common/proc.run_tool` 경유, `shell=False`):
+호출(고정, `common/proc.run_tool("gitleaks", args, timeout=15, input_bytes=data)` — 02 §6 시그니처 `run_tool(tool, args, timeout, input_bytes=None, env=None)`, `shell=False`). `args`:
 
 ```
 gitleaks stdin
@@ -410,13 +412,14 @@ gitleaks stdin
 
 - `vault/data/gitleaks.toml` 내용: `[extend]` `useDefault = true` 한 섹션뿐(설치된 gitleaks 의 기본 규칙 사용). 허용 목록을 넣지 않는다.
 - `/var/empty`: macOS 의 root 소유 빈 디렉터리(실측 존재). `.gitleaksignore` 가 있을 수 없는 경로.
-- 작업 디렉터리 `cwd="/"`. 환경변수: `PATH`, `LANG=C`, `HOME=/var/empty` 만 전달하고 `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML` 은 **제거**(둘 다 설정 우선순위 2·3위).
-- 입력: `run_tool(..., input_bytes=data, timeout=15)`. 02 §6 의 `run_tool` 은 표준입력 바이트 인자를 지원해야 한다(§19 변경 요청). stdout 상한 1 MiB(초과 → 결과 폐기 + 아래 실패 처리), stderr 는 읽어서 **길이만** 쓰고 버린다(오류 메시지에 경로·내용이 섞일 수 있음).
+- 실행 파일: `run_tool` 이 `common/paths.system_path("gitleaks")` 의 **절대경로 고정 후보**(`/opt/homebrew/bin/gitleaks`, `/usr/local/bin/gitleaks`)로만 실행한다(02 §6 — `PATH` 검색 없음). vault 의 추가 요구: 후보의 `realpath`(Homebrew 는 `Cellar/…` 로의 링크)가 그 Homebrew 접두사 아래여야 한다 — `system_path` 의 구현 조건으로 02/10 과 맞춘다. 이유: `PATH` 앞에 둔 가짜 `gitleaks` 가 항상 `[]` 를 돌려주면 탐지가 조용히 꺼진다(08 §6.4 와 같은 원칙). 샌드박스 테스트만 `$DAYCLOSE_SANDBOX/bin` 의 가짜 gitleaks(11 §2.3)를 먼저 본다 — §17 L4 의 “가짜 gitleaks” 테스트가 이것을 쓴다. git 도 `/usr/bin/git` 고정(Xcode CLT 미설치 시 이 경로는 설치 대화상자를 띄우는 shim 이므로, `core.doctor` 가 `xcode-select -p` 대신 `/Library/Developer/CommandLineTools` 또는 Xcode 존재를 먼저 확인하고 없으면 git 단계를 `W_TOOL_MISSING` 으로 건너뛴다 — 09 와 조율).
+- 작업 디렉터리 `cwd="/"`. 환경: `run_tool` 이 고정 최소 집합으로 새로 만든다(02 §6 — 사용자 셸 환경을 물려주지 않으므로 `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML`(설정 우선순위 2·3위)은 애초에 전달되지 않는다). vault 는 `env={"HOME": "/var/empty", "LANG": "C"}` 를 덧붙인다. 회귀 테스트: 부모 환경에 `GITLEAKS_CONFIG=<전부 허용 설정>` 을 두어도 적중이 나와야 한다.
+- 입력: `input_bytes=data`(stdin). stdout 상한 1 MiB(초과 → 결과 폐기 + 아래 실패 처리), stderr 는 읽어서 **길이만** 쓰고 버린다(오류 메시지에 경로·내용이 섞일 수 있음).
 
 ### 5.2 사용 가능성 판정 (run 당 1회, 메모이즈)
 
 1. `config.vault.gitleaks == "off"` → 사용 안 함, 경고 없음.
-2. `run_tool(["gitleaks","version"], timeout=5)` 실패(없음) → 사용 안 함, `W_TOOL_MISSING` `{"tool":"gitleaks"}`.
+2. `run_tool("gitleaks", ["version"], timeout=5)` 실패(후보 경로에 없음) → 사용 안 함, `W_TOOL_MISSING` `{"tool":"gitleaks"}`.
 3. `gitleaks stdin --help` 종료 코드 0, 그리고 `gitleaks --help` 출력에 `--redact` 와 `--ignore-gitleaks-allow` 와 `--gitleaks-ignore-path` 가 모두 있음 → 사용. 아니면 `W_TOOL_MISSING` `{"tool":"gitleaks","reason":"unsupported_version"}`. 결정: 버전 번호가 아니라 기능 탐지. 이유: 플래그 존재가 안전 조건 그 자체.
 4. 자가 시험: 빌드에 포함된 가짜 토큰 한 줄(런타임에 문자열 조합으로 만든 `ghp_` + 36자, 저장소에 완성 문자열이 없게)을 stdin 으로 넣어 적중 1건이고 `Match == Secret == "REDACTED"` 인지 확인. 실패 → 사용 안 함, `W_TOOL_MISSING` `{"reason":"self_test_failed"}`.
 
@@ -470,10 +473,10 @@ fp_key = HMAC-SHA256(field_key_v1, b"dayclose.vault.fingerprint.v1")   # 필드 
 fingerprint_sha256 = hex(HMAC-SHA256(fp_key, file_bytes))
 ```
 
-이유: `.env`·`.pgpass` 처럼 작고 엔트로피가 낮을 수 있는 비밀 파일의 평문 해시는 DB 만 유출돼도 사전 공격으로 원문을 맞힐 수 있다. 같은 기기 안 중복 판정에는 키 입력 해시로 충분하다. (06 컬럼 주석 “파일 SHA-256” 의 갱신 요청 — §19.)
+이유: `.env`·`.pgpass` 처럼 작고 엔트로피가 낮을 수 있는 비밀 파일의 평문 해시는 DB 만 유출돼도 사전 공격으로 원문을 맞힐 수 있다. 같은 기기 안 중복 판정에는 키 입력 해시로 충분하다. (06 §5.3 컬럼 주석에 반영됨.)
 
 - 필드 키가 없으면(`W_FIELD_KEY_UNAVAILABLE`) NULL.
-- 저장하지 않는 종류: `crypto_seed_suspected`, `recovery_codes`, Solana 평문 키(§3.10).
+- 저장하지 않는 종류: `crypto_seed_suspected`, `recovery_codes`(06 §5.3 CHECK 가 이 두 종류의 `fingerprint_sha256`·`key_fingerprint`·`cert_subject_enc` 를 NULL 로 강제), Solana 평문 키(§3.10 — kind 는 `crypto_wallet` 이라 CHECK 밖, store 리포지토리 함수가 강제하고 안전 테스트로 고정).
 - 연관 규칙(04 와의 계약): vault 가 자산으로 판정한 엔트리에 대해 **`file_entries.sha256` 을 쓰지 않으며**, 이미 값이 있으면 같은 트랜잭션에서 `sha256=NULL, sha256_mtime_ns=NULL` 로 지운다. intel 의 중복 탐지 후보에서 보안 자산은 이미 빠져 있다(04 §12.1 “보안 자산 아님”). 시드 의심 판정 전에 fs 수집기의 볼륨 간 이동 2차 매칭(04 §2.4)이 해시를 계산했을 수 있으므로 이 삭제 규칙이 필요하다.
 
 ### 7.2 키 지문 `key_fingerprint`
@@ -513,7 +516,7 @@ key_fingerprint = hex(SHA-256(DER(SubjectPublicKeyInfo)))   # 소문자 64자
 
 1. 후보 목록 = 이번 run 의 `created`/`modified`/`moved` 엔트리 중 §2.2 후보 + 백로그(§2.4) + §2.1.2 고정 파일.
 2. 각 후보를 §3 순서로 판정 → `Detection | None`.
-3. `None` 이고 기존 자산이 그 엔트리를 가리키면(내용이 바뀌어 더 이상 비밀이 아님 — 예: `.env` 를 비움): 자산을 `missing` 이 아니라 **유지**하되 `confidence` 를 낮추지 않는다. 결정: 한 번 자산이었던 파일은 사용자가 `vault.annotate --status retired`(§19 변경 요청) 하기 전까지 자산으로 남는다. 이유: 비밀을 지운 `.env` 도 Git 이력·백업에는 남아 있고, 보호 해제를 내용 변화에 맡기면 “내용을 잠깐 바꾼 뒤 휴지통” 경로가 생긴다.
+3. `None` 이고 기존 자산이 그 엔트리를 가리키면(내용이 바뀌어 더 이상 비밀이 아님 — 예: `.env` 를 비움): 자산을 `missing` 이 아니라 **유지**하되 `confidence` 를 낮추지 않는다. 결정: 한 번 자산이었던 파일은 사용자가 `vault.annotate --status retired`(02 §5.3) 하기 전까지 자산으로 남는다. 이유: 비밀을 지운 `.env` 도 Git 이력·백업에는 남아 있고, 보호 해제를 내용 변화에 맡기면 “내용을 잠깐 바꾼 뒤 휴지통” 경로가 생긴다.
 4. `Detection` 이면 insert 또는 update: `kind`(바뀌면 갱신), `detect_methods_json`, `confidence`, `masked_name`(§10), 지문, 인증서 컬럼, `needs_password`, `permissions_mode = st_mode & 0o7777`, `project_id`(04 의 프로젝트 매칭 — 경로가 `projects.root_path` 아래), `in_git_repo`/`git_tracked`/`git_ignored`(§9.3), `last_seen_run_id`, `updated_at`. 새 행이면 `first_seen_run_id`, `status='active'`, `backup_status='unknown'`.
 5. 지문이 바뀌었고 `backup_status='verified'` → `backup_status='stale'`(§12.3).
 6. 엔트리 `deleted` 처리(§7.4).
@@ -543,15 +546,17 @@ is_security_asset(e) :=
 - `entry_id=NULL` 자산은 항목이 아니라 `vault.health` 와 세션 지표 `vault_new` 에만 반영.
 - 항목의 `suggestion`: `action='acknowledge'`, `source='heuristic'`, `reason` = 자산 종류 문구 + 가장 높은 심각도 발견 사항 요약(마스킹 규칙 적용, 경로 없음), `confidence` = 자산 confidence.
 - `allowed_actions` = 02 §10.1 의 `security_asset` 행: `acknowledge`, `keep`, `keep_always`, `defer`.
-- 항목에 `acknowledge` 또는 `keep`/`keep_always` 결정이 기록되면, 그 시점에 열려 있던 그 자산의 모든 발견 사항을 `acknowledged`(+`acknowledged_at`)로 바꾼다(결정 — 발견 사항 단위 확인 명령이 02 에 없으므로. §19). 이후 새로 생기는 발견 사항은 다시 `open`.
+- 항목에 `acknowledge` 또는 `keep`/`keep_always` 결정이 기록되면, 그 시점에 열려 있던 그 자산의 모든 발견 사항을 `acknowledged`(+`acknowledged_at`)로 바꾼다(02 §5.3 계약 — 발견 사항 확인 전용 명령은 두지 않는다). 이후 새로 생기는 발견 사항은 다시 `open`.
 
 ### 8.4 `missing`·`retired` 의 효과
 
 | status | 발견 사항 | 목록 기본 표시 |
 |---|---|---|
 | `active` | 전부 평가 | 예 |
-| `missing` | 평가 중단. 열린 것은 `resolved` | `--status missing` 일 때만 |
-| `retired` | `tracked_in_git`, `exposed_location`, `bad_permissions`, `duplicate`, `plaintext_secret` 만 계속 평가(폐기한 키도 노출은 노출). `expiring_soon`, `expired`, `no_backup` 은 `resolved` | `--status retired` 일 때만 |
+| `missing` | 평가 중단. 열린 것은 `resolved` | `--status missing` 일 때만. 마지막 관측 365일 후 행 삭제(06 §8, 발견 사항 함께) |
+| `retired` | `tracked_in_git`, `exposed_location`, `bad_permissions`, `duplicate`, `plaintext_secret` 만 계속 평가(폐기한 키도 노출은 노출). `expiring_soon`, `expired`, `no_backup` 은 `resolved` | `--status retired` 일 때만. `vault.annotate --status active` 로 되돌리면 전부 재평가 |
+
+보존(06 §8): `resolved` 발견 사항은 `resolved_at` 180일 후 삭제. `active`·`retired` 자산은 삭제하지 않는다.
 
 ---
 
@@ -587,7 +592,7 @@ is_security_asset(e) :=
 자산 경로 `p` 에 대해(엔트리 변화가 있거나 시간 의존 재평가 시):
 
 1. 저장소 루트 찾기: `p` 의 부모부터 위로 올라가며 `.git`(디렉터리 또는 `gitdir:` 파일)을 `lstat`. 스캔 루트의 부모를 넘어가면 중단. 결과 없음 → `in_git_repo=0, git_tracked=0, git_ignored=0`, 끝.
-2. 이후 git 호출 공통: `run_tool(["git","-C",R, "-c","core.fsmonitor=false", "-c","core.untrackedCache=false", "--no-pager", …], timeout=5)`, 환경 `GIT_OPTIONAL_LOCKS=0`(색인 갱신 쓰기 방지), `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `LANG=C`. 이유: `core.fsmonitor` 는 저장소 설정으로 임의 프로그램을 실행시킬 수 있고, `GIT_OPTIONAL_LOCKS=0` 이 없으면 일부 읽기 명령이 `.git/index` 를 다시 쓴다. `safe.directory` 는 건드리지 않는다(소유자가 다른 저장소의 설정을 읽지 않게 하는 git 의 보호를 유지) — git 이 “dubious ownership”(종료 128)으로 거부하면 Git 상태 미확인으로 두고 발견 사항을 만들지 않는다.
+2. 이후 git 호출 공통: `run_tool("git", ["-C",R, "-c","core.fsmonitor=false", "-c","core.untrackedCache=false", "--no-pager", …], timeout=5, env={…})`(실행 파일은 `system_path("git")` = `/usr/bin/git`), 덧붙이는 환경 `GIT_OPTIONAL_LOCKS=0`(색인 갱신 쓰기 방지), `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `LANG=C`. 이유: `core.fsmonitor` 는 저장소 설정으로 임의 프로그램을 실행시킬 수 있고, `GIT_OPTIONAL_LOCKS=0` 이 없으면 일부 읽기 명령이 `.git/index` 를 다시 쓴다. `safe.directory` 는 건드리지 않는다(소유자가 다른 저장소의 설정을 읽지 않게 하는 git 의 보호를 유지) — git 이 “dubious ownership”(종료 128)으로 거부하면 Git 상태 미확인으로 두고 발견 사항을 만들지 않는다.
 3. 추적 여부: `ls-files --error-unmatch -z -- <R 기준 상대경로>` → 종료 0 이면 `git_tracked=1`(`tracked`).
 4. 무시 여부: `check-ignore -q -- <상대경로>` → 종료 0 이면 `git_ignored=1`, 1 이면 0, 그 외 미확인(02 의 주의: `check-ignore` 는 무시되면 0).
 5. 이력: `git_tracked=0` 이면 `log --all -1 --format=%H -- <상대경로>` → 출력이 있으면 `history`(지금은 추적 안 하지만 과거 커밋에 있음). 커밋 해시는 저장하지 않는다. 결정: `-p`/`--stat` 를 쓰지 않는다(diff 드라이버·textconv 실행 방지).
@@ -761,14 +766,15 @@ FR-SV-007: `tracked_in_git` 항목의 제안 동작은 `acknowledge` 하나(§8.
   "findings": [
     {"id": "fnd_12", "finding": "expiring_soon", "severity": "high", "state": "open",
      "asset_id": "ast_6", "entry_id": null, "kind": "apple_signing", "masked_name": "distribution.p12", "display_path": "~/Desktop",
-     "message": "만료까지 23일 남았습니다.", "remediation": "…"}
+     "title": "인증서 만료 임박", "message": "만료까지 23일 남았습니다.", "remediation": "…"}
   ],
   "tools": {"gitleaks": "ok"}
 }
 ```
 
 - `needs_review` = 열린 항목(`is_open=1`)이 있는 자산 수, `reviewed` = 그 외 활성 자산 중 결정이 기록된 수(CONTEXT 턴2 UI 의 “보호 검토 필요 / 검토 완료”).
-- `checks`: 발견 사항 유형마다 `ok`(0건) / `attention`(warn 이상 1건 이상) — UI 의 “권한 검사 정상” 문구 근거.
+- `checks`: 9개 발견 사항 유형 **전부**에 대해 항상 한 줄씩(통과한 검사 포함) `{finding, status, count, title, message}`. `status`: `ok`(열린 것 0건) / `attention`(warn 이상 1건 이상) / `info_only` / `unavailable`(도구 없음·평가 불가 — 예: Git 미설치면 `tracked_in_git` 은 `unavailable`). UI 는 `title`·`message`·`remediation` 을 그대로 표시한다(03) — 문구의 원천은 core 하나.
+- `title`(짧은 제목): `expiring_soon` “인증서 만료 임박”, `expired` “만료된 인증서”, `tracked_in_git` “Git 저장소 내 인증 정보”, `duplicate` “중복 키”, `bad_permissions` “파일 접근 권한”, `no_backup` “백업 미확인”, `exposed_location` “노출된 위치”, `plaintext_secret` “일반 파일 속 비밀값”, `seed_phrase_suspected` “복구 구문 의심 파일”.
 - `findings`: `state ∈ {open, acknowledged}`, 심각도 내림차순, 최대 100개(초과 시 `W_TRUNCATED`).
 - 엔트리 단위 발견 사항: `asset_id=null`, `entry_id` 는 외부 ID(`ent_…`), `masked_name` 은 엔트리 이름에 10.1 의 5단계를 적용한 것.
 - `tools.gitleaks`: `ok` | `missing` | `off` | `unsupported` | `redaction_failed`.
@@ -781,7 +787,9 @@ FR-SV-007: `tracked_in_git` 항목의 제안 동작은 `acknowledge` 하나(§8.
 
 ## 12. 사용자 표시 (`vault.annotate`)
 
-시그니처(02 §5.3): `dayclose vault annotate ASSET_ID [--label TEXT] [--note TEXT] [--expires DATE] [--backup verified|none|unknown]`. W(쓰기 잠금), 파일 변경 없음, `audit_log` 기록(`target_type='asset'`, `summary="vault.annotate label,backup"` 처럼 바뀐 필드 이름만).
+시그니처(02 §5.3): `dayclose vault annotate ASSET_ID [--label TEXT] [--note TEXT] [--expires DATE] [--backup verified|none|unknown] [--status active|retired]`. W(쓰기 잠금), 파일 변경 없음, `audit_log` 기록(`target_type='asset'`, `summary="vault.annotate label,backup"` 처럼 바뀐 필드 이름만). MCP 비노출(02 §10.3).
+
+`--status`: `retired` ↔ `active` 만(`missing` 은 스캔만 설정하므로 `E_USAGE`). 효과는 §8.4 — 보호(§8.2)는 바뀌지 않는다. `missing` 자산에 `--status retired` 는 허용(사라진 키를 폐기로 정리).
 
 ### 12.1 검증
 
@@ -808,7 +816,7 @@ FR-SV-007: `tracked_in_git` 항목의 제안 동작은 `acknowledge` 하나(§8.
 | `verified` | 사용자가 “복구 가능한 사본이 있다”고 표시 | 사용자 |
 | `stale` | `verified` 표시 뒤 파일 지문이 바뀜(키를 갈아 끼움 — 예전 백업은 새 키의 백업이 아님) | vault 자동(§8.1 5단계). 지문이 NULL 인 종류는 자동 전이 없음 |
 
-결정: DayClose 는 “백업이 실제로 존재하는지”를 검증하지 않는다(사본 위치를 알 수도, 읽을 수도 없다 — 비밀번호 관리자·종이 등). 같은 기기의 다른 경로에 있는 사본(`duplicate`)은 백업으로 치지 않는다(같은 디스크 고장에 함께 사라짐).
+소유자 확정(PRD C10): “백업됨” = 사용자가 `vault annotate --backup verified` 로 표시한 경우뿐. 결정: DayClose 는 “백업이 실제로 존재하는지”를 검증하지 않는다(사본 위치를 알 수도, 읽을 수도 없다 — 비밀번호 관리자·종이 등). 같은 기기의 다른 경로에 있는 사본(`duplicate`)은 백업으로 치지 않는다(같은 디스크 고장에 함께 사라짐).
 
 ---
 
@@ -854,6 +862,7 @@ FR-SV-007: `tracked_in_git` 항목의 제안 동작은 `acknowledge` 하나(§8.
 ## 15. 백업·암호화 보관 — 범위 밖 (2026-11-24 소유자 결정)
 
 - NAS·SMB·원격 보관, age 암호화 업로드, Vault 원격 백업은 **비목표**다(PRD §7, §9.1 C6, FR-SV-009 삭제, 02 §3 “age 는 쓰지 않는다”). 이 문서는 그 설계를 하지 않는다. AGENTS §1: 확정 사항을 다시 열지 않는다.
+- 결정: 로컬 “암호화 내보내기”(자산을 암호화된 파일 하나로 묶어 사용자가 직접 보관)도 만들지 않는다. 이유: 그 기능은 DayClose 가 모든 개인키의 사본을 한곳에 만드는 기능이라 “제자리 인벤토리”(§14)와 정면으로 충돌하고, 암호 관리·복구 검증을 다시 들여온다. 사용자에게는 §9.6 의 `no_backup` 문구로 기존 도구(비밀번호 관리자, 암호화된 외장 디스크 이미지)를 안내한다.
 - 남는 것: `backup_status` 는 사용자 표시로만 갱신(§12.3), `no_backup` 발견 사항은 사용자가 스스로 백업하도록 알리는 장치.
 - `archive` 동작(로컬/외장 `archive.root`, 08)은 보안 자산에 허용되지 않는다(02 §10.1). 따라서 DayClose 는 어떤 경로로도 보안 자산의 사본을 만들지 않는다 — 이 문서의 안전 테스트가 이 성질을 고정한다(“자산 엔트리를 `src` 로 하는 `plan_operations` 행 0”, “executor 의 복사 함수가 자산 경로로 호출되지 않음”).
 - 재도입 시 지켜야 할 조건(기록용, 설계 아님): 클라이언트 측 암호화 후에만 기기 밖 복사, 복호화 왕복 검증 후에만 “verified”, 암호화 키를 같은 사본 옆에 두지 않음, 시드·복구 코드 제외, 원본 경로 불변. 이 조건을 바꾸려면 PRD §7 부터 고친다.
@@ -946,19 +955,20 @@ M3(그리고 M4)에서 사용자 파일이 한 바이트도 바뀌지 않는다�
 16. `skill`/`mcp` 채널에서 실제 경로·이름·subject·메모는 null(§11.5).
 17. 메모에 비밀 패턴이면 거부(§12.1).
 
-### 19.2 기준 문서(02/06/04/10) 변경 요청
+### 19.2 기준 문서 변경 요청 — 반영 상태 (2026-11-24 재조정 후)
 
-| # | 문서 | 내용 | 이유 |
-|---|---|---|---|
-| R1 | 02 §5.3 | `vault.annotate` 에 `--status active\|retired` 추가 | 06 §4.6 이 “`retired` 는 M3 의 `vault.annotate`” 라고 하지만 02 시그니처에 수단이 없다 |
-| R2 | 02 §5.3 또는 06 §4.6 | 발견 사항 단위 확인 수단(예: `vault.annotate --ack-findings`)을 둘지 결정. 현재는 §8.3 의 “항목 확인 = 자산의 발견 사항 확인”으로 대체 | 06 의 `vault_findings.state=acknowledged` 로 가는 명령이 없음 |
-| R3 | 02 §6 | `run_tool(argv, timeout, allow=…, input_bytes=None, env=None)` — 표준입력 바이트와 환경 축소 지원 | gitleaks `stdin`(§5.1), git 환경변수(§9.3) |
-| R4 | 02 §9 | `vault.extra_paths` 기본값에 `~/.azure`, `~/.docker`, `~/.config/gh` 추가 검토 | §2.1.2 고정 목록과 중복 정리 |
-| R5 | 06 §5.3 주석 | `fingerprint_sha256` = “파일 내용의 키 입력 HMAC-SHA256(05 §7.1)” 로 정정, `cert_not_before/after` 단위 = epoch ms 명시 | §7.1, §3.1 |
-| R6 | 06 §5.3 / store | `crypto_seed_suspected` 행의 `fingerprint_sha256`/`key_fingerprint`/`cert_*` NULL 을 CHECK 로: `CHECK (kind <> 'crypto_seed_suspected' OR (fingerprint_sha256 IS NULL AND key_fingerprint IS NULL AND cert_subject_enc IS NULL))` | V5 를 DB 가 강제하게. 0003 은 아직 구현 전이므로 지금 넣으면 테이블 재작성 비용 없음 |
-| R7 | 04 §2.5 / §2.4 | 볼륨 간 이동 2차 매칭의 해시가 vault 판정 전에 저장될 수 있음 → §7.1 의 삭제 규칙을 04 에 명시, 또는 2차 매칭 해시를 메모리에서만 쓰고 저장하지 않기 | 시드 파일의 평문 SHA-256 이 잠깐이라도 DB 에 남음 |
-| R8 | 10 | 항목 JSON 의 `path` 를 `skill`/`mcp` 채널에서 `protection ∈ {security_asset, patient_data}` 이면 null | AGENTS §3.4 |
-| R9 | 06 §8 | 보안 자산 행·발견 사항 보존 기간 명시(현재 압축 표에 없음). 제안: `missing` 자산 365일 후 삭제, `resolved` 발견 사항 180일 후 삭제 | 용량·불필요한 위치 이력 |
+| # | 요청 | 상태 |
+|---|---|---|
+| R1 | `vault.annotate --status active\|retired` | 반영(02 §5.3). §12 |
+| R2 | 발견 사항 단위 확인 명령 | **거부** — 전용 명령 없음. 항목의 `acknowledge`/`keep`/`keep_always` 결정이 그 자산의 열린 발견 사항을 확인 처리(§8.3, 02 §5.3). 앱(03)의 발견 사항별 [확인] 은 해당 자산 항목의 `decision.set --action acknowledge` 로 매핑해야 한다 → 03 확인 필요 |
+| R3 | `run_tool(tool, args, timeout, input_bytes, env)`, 절대경로 허용 목록, 고정 환경 | 반영(02 §6). §5.1, §9.3. 남은 세부: `system_path` 가 Homebrew 후보의 `realpath` 를 접두사 안으로 제한하는지 02/10 에 명시 필요 |
+| R4 | `extra_paths` 에 `~/.azure`, `~/.docker`, `~/.config/gh` | 반영(02 §9). §2.1.1, §2.1.2 |
+| R5 | `fingerprint_sha256` = 키 입력 HMAC, 인증서 시각 epoch ms | 반영(06 §5.3) |
+| R6 | 복구 수단 행의 파생값 NULL CHECK | 반영 — `crypto_seed_suspected` 와 `recovery_codes` 둘 다(06 §5.3) |
+| R7 | vault 판정 전 해시 비저장 | 반영(06 §6) |
+| R8 | `skill`/`mcp` 채널에서 보호 항목 `path` null | 10 문서 소관 — 확인 필요 |
+| R9 | 보존 기간 | 반영(06 §8: `missing` 365일, `resolved` 발견 사항 180일). §8.4 |
+| — | `app_meta` 키 `vault.backlog_entry_ids` | 반영(06 §5.1 키 목록) |
 
 ### 19.3 남은 위험 (닫지 못함)
 

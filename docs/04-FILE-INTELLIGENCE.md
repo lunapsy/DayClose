@@ -35,9 +35,9 @@
 | `~/Desktop` | `desktop` | 6 | 1 | |
 | 스크린샷 저장 위치 | `screenshots` | 2 | 1 | `defaults read com.apple.screencapture location` 결과가 Desktop 과 다를 때만(읽기 방식은 09). 경로가 다른 루트 안이면 등록하지 않고 그 루트의 하위로 취급 |
 | `~/Documents` | `documents` | 8 | 1 | 기본 루트 확정(2026-11-24). dataless 규칙(§2.6) 적용 |
-| `~/Library/Mobile Documents/com~apple~CloudDocs` | `icloud_drive` | 8 | 1 | 기본 루트 확정(02 §10.6). 항목의 허용 동작은 `keep`/`keep_always`/`defer` 만(02 §10.1 예외 2). `exclude_globs` 의 `**/Library/**` 는 루트 기준 상대경로로 매칭되므로 이 루트 자체를 제외하지 않는다(§2.2) |
+| `~/Library/Mobile Documents/com~apple~CloudDocs` | `icloud_drive` | 8 | 1 | 기본 루트 확정(02 §10.6). iCloud 동기화 경로 — 허용 동작은 02 §10.1 예외 2 의 표(다운로드된 파일의 `trash` 는 해제 게이트가 열렸을 때만, `move`/`archive`/`rename` 은 v1 에서 불허). `exclude_globs` 의 `**/Library/**` 는 루트 기준 상대경로로 매칭되므로 이 루트 자체를 제외하지 않는다(§2.2) |
 | `config.projects.roots` 각각 (기본 `~/dev`) | `projects` | 2 | 0 | 저장소 탐지용. 파일 단위 항목 없음 |
-| `~/Library/Developer/Xcode/DerivedData` (존재 시) | `custom` | 1 | 0 | 결정: 개발 캐시(§10) 전용 루트. 이유: `vault_extra` 와 달리 사용자 파일이 아니고, `file_entries.root_id NOT NULL` 이라 캐시 디렉터리 엔트리를 담을 루트가 필요. → 02 §5.3/FR-CORE-002 에 반영 필요(보고서 참고) |
+| `~/Library/Developer/Xcode/DerivedData` (존재 시) | `custom` | 1 | 0 | 결정: 개발 캐시(§10) 전용 루트. 이유: `vault_extra` 와 달리 사용자 파일이 아니고, `file_entries.root_id NOT NULL` 이라 캐시 디렉터리 엔트리를 담을 루트가 필요(02 §9 의 `init` 규칙). M3 부터 사용 |
 
 `vault_extra` 루트(`config.vault.extra_paths`)는 05 가 등록 규칙을 정한다. fs 수집기는 이 루트를 순회하되 **항목은 만들지 않고**(`file_level` 값과 무관) 엔트리만 vault 에 넘긴다.
 
@@ -45,7 +45,48 @@
 
 중복 루트 제거(02 §10.6): 스캔 시작 시 각 루트 디렉터리의 `(st_dev, st_ino)` 를 구해, 같은 값을 가진 루트가 둘 이상이면(“데스크탑 및 문서 폴더” iCloud 동기화, 사용자가 같은 폴더를 다른 경로로 두 번 등록 등) **루트 ID 가 가장 작은 것 하나만** 순회하고 나머지는 이번 run 에서 건너뛴다(엔트리 유지, `stats.duplicate_roots`). 심볼릭 링크는 따라가지 않으므로 링크로 연결된 경로는 별도 트리가 되지 않는다.
 
-iCloud 동기화 루트 판정: 루트 kind 가 `icloud_drive` 이거나, 루트 디렉터리의 `realpath` 가 iCloud Drive 루트 아래이면 그 루트의 항목은 iCloud 항목으로 취급한다(허용 동작 제한 대상). 결정: “데스크탑 및 문서” 동기화가 켜진 `~/Desktop`·`~/Documents` 도 휴지통 이동이 다른 기기로 전파되므로 같은 제한을 받아야 한다. 이 판정을 `policy` 가 쓰도록 엔트리마다 `icloud=True/False` 를 intel 이 제공한다 → 02 §10.1 예외 2 의 문구(“`icloud_drive` 루트 항목”)를 “iCloud 동기화 경로의 항목”으로 넓힐지 확인 필요(보고서). 실제 동기화 시 경로가 어떻게 보이는지는 09 가 실기기로 확인한다.
+iCloud 동기화 루트 판정(02 §10.1 예외 2, 06 `scan_roots`): 세 컬럼을 쓴다 — 사용자 지정 `icloud_synced_mode`(`auto`|`yes`|`no`, 기본 `auto`), 실효값 `icloud_synced`(0/1), 실효값의 근거 `icloud_synced_source`(`detected`|`user`|`assumed`). fs 수집기는 **매 scan 시작 시** 루트마다 실효값과 근거를 다시 계산하고, 둘 중 하나가 바뀌었을 때만 UPDATE 한다. 수집기는 `icloud_synced_mode` 를 절대 쓰지 않는다(사용자만 `root add … --icloud-synced`, `root set ROOT_ID --icloud-synced` 로 바꾼다 — 02 §5.3. `root.set` 은 MCP 비노출).
+
+```
+effective(root):
+    live = live_signal_root(root)         # 아래 '실시간 신호' — 양성이면 사용자 'no' 보다 우선 (08 §9.2)
+    if root.icloud_synced_mode == 'yes': return (1, 'user')
+    if root.icloud_synced_mode == 'no':  return (1, 'detected') if live else (0, 'user')
+    # auto
+    if live: return (1, 'detected')
+    sig = detect(root)                    # True | False | None
+    if sig is True:  return (1, 'detected')
+    if sig is False: return (0, 'detected')
+    if root.kind in ('desktop', 'documents'): return (1, 'assumed')   # 신호 없음 → 안전 쪽
+    return (0, 'detected')
+```
+
+`detect(root)` (`common/paths.is_icloud_synced(path) -> bool | None`, 테스트에서 주입):
+1. `kind = 'icloud_drive'` → `True`.
+2. 루트 디렉터리의 `realpath` 가 iCloud Drive 루트(`~/Library/Mobile Documents/com~apple~CloudDocs`) 아래 → `True`.
+3. 루트가 `~/Desktop` 또는 `~/Documents` 이면 “데스크탑 및 문서 폴더” iCloud 동기화 여부를 09 §12(V17)가 확정한 방법으로 확인 → 켜짐 `True`, 꺼짐이 확인됨 `False`. V17 방법이 정해지기 전, 또는 확인 중 오류·시간 초과 → `None`.
+4. 그 외 루트(Downloads·custom 등)는 1·2 가 아니면 `False`.
+
+**실시간 신호**(08 §9.2, 04·07·08 공통 규칙): `lstat`·`realpath` 만 쓰고 파일 내용은 열지 않는다(다운로드 유발 없음). 하나라도 양성이면 그 대상은 iCloud 동기화로 취급한다.
+- S1 경로가 `~/Library/Mobile Documents/` 또는 `~/Library/CloudStorage/` 아래(`realpath` 기준). `CloudStorage` 는 File Provider 기반 서드파티 동기화(Dropbox·Google Drive 등)도 포함하며, 같은 이유(삭제 전파·다운로드 유발)로 같은 제한을 받는다.
+- S2 루트가 `desktop`/`documents` 이고 `~/Library/Mobile Documents/com~apple~CloudDocs/Desktop`(또는 `…/Documents`)이 존재(`lstat`).
+- S3 파일에 `SF_DATALESS` 플래그(§2.6) — 파일 단위.
+`live_signal_root(root)` 는 S1·S2 를 루트 디렉터리에 적용한 결과다.
+
+**항목에 쓰는 실효 상태**: `allowed_actions`·`blocked_reasons`·제안(§13)·중복 keeper 선택(§12.1)에 쓰는 항목의 `icloud_synced` 는
+
+```
+item.icloud_synced = root.icloud_synced (저장된 실효값) OR S1(item.path) OR S3(item)
+```
+
+즉 사용자가 `no` 로 지정한 루트라도 실시간 신호가 양성인 항목은 iCloud 동기화로 처리한다. 결정 이유: 사용자 지정은 “판정이 실패할 때의 대체 수단”이지 실제로 동기화 중인 파일의 삭제 전파 위험을 없애지 못한다. 이 OR 계산은 intel 이 항목마다 하고, `policy`·`plan`·`executor` 는 같은 함수(`common/paths.live_icloud_signal`)를 다시 불러 재검증한다(08 §9.2).
+
+결과: V17 이 확정되기 전에는 `~/Desktop`·`~/Documents` 가 `auto` 일 때 항상 `icloud_synced=1, source=assumed` 다. 동기화를 쓰지 않는 사용자는 `root set ROOT_ID --icloud-synced no` 로 풀고(source `user`), 이것이 V17 실패 시의 대체 수단이다. `root.list` 는 세 값을 모두 보여 준다(02 §5.3). 결정: 이전 scan 의 값을 이어받지 않는다 — 매 scan 의 결과는 그 scan 의 입력(모드·kind·판정 결과)만으로 정해진다(결정성, 테스트 재현성).
+
+항목 단위 값: intel 은 항목마다 `icloud_synced`(루트 값)와 `is_dataless`(§2.6)를 계산해 넘기고, 항목 JSON 의 같은 이름 필드가 된다(02 §5.6). `allowed_actions`·`blocked_reasons` 는 `policy` 가 02 §10.1 예외 2 의 표로 계산한다:
+- dataless → `trash`/`move`/`archive`/`rename` 모두 불가(`dataless`).
+- `icloud_synced` + 다운로드됨 → `trash` 는 해제 게이트(`policy/icloud.py: TRASH_UNLOCK_VERIFIED` **그리고** `config.icloud.allow_trash`)가 참일 때만 허용, 아니면 `icloud_synced`. `move`/`archive`/`rename` 은 v1 에서 허용하지 않는다(`icloud_synced`, 해제 예정 없음 — 확정).
+intel 은 이 값들을 바꾸지 않고 읽기만 한다. 이 문서에서 “trash 가능한 iCloud 항목” 은 위 조건으로 `allowed_actions` 에 `trash` 가 들어 있는 항목을 뜻한다.
 
 ### 1.2 루트 접근 실패
 
@@ -125,7 +166,7 @@ for o in 관측:
     else:
         → 보류 목록 appeared 에 추가
 seen 되지 않은 이전 엔트리 → 보류 목록 vanished
-2차 매칭(볼륨 간 이동): appeared 와 vanished 에서
+2차 매칭(볼륨 간 이동; 여기서 새로 계산한 해시는 메모리 전용 — §2.5): appeared 와 vanished 에서
     kind=='file' and 이름 동일 and size 동일 and size >= 1 MiB
     and (양쪽 sha256 가 있으면 일치, 없으면 vanished.sha256 이 있고 appeared 를 해시해서 일치)
     가 1:1 로 대응하면 → moved (cross_device). 나머지 appeared → created, vanished → deleted
@@ -145,6 +186,16 @@ seen 되지 않은 이전 엔트리 → 보류 목록 vanished
 - 이벤트 행: `file_events(event, old_path, new_path, size_delta)` — `created`: new_path, `modified`: new_path + size_delta, `deleted`: old_path + `-size`, `moved`: 둘 다. `detected_at` = 이번 run 시작 시각.
 - 엔트리 갱신: `created` → 새 행(`first_seen_run_id`), `deleted` → `present=0, deleted_run_id`, `moved` → 같은 행의 path/name/ext/root_id 갱신, `modified` → size/mtime/ctime(+필요 시 dev/inode) 갱신 및 **`sha256` 무효화**(`sha256_mtime_ns != mtime_ns` 이면 다음 필요 시 재계산).
 - 변경 없는 재스캔 → 이벤트 0(FR-CORE-003 AC).
+- 해시 저장 시점: intel 단계(§0 의 6, vault 판정 뒤)에서 계산한 중복 후보 해시만 `sha256`/`sha256_mtime_ns` 에 저장한다. vault 가 자산으로 판정한 엔트리는 vault 가 같은 트랜잭션에서 두 값을 NULL 로 지운다(06 §6, 05).
+
+### 2.4a executor 와의 계약 (06 §4.1 “실행 결과의 스냅샷 반영”)
+
+executor 는 연산 `done` 과 같은 트랜잭션에서 `file_entries` 를 직접 갱신한다: 새 경로·`root_id`·dev/inode, 목적지가 어느 루트에도 속하지 않으면 `present=0, deleted_run_id=NULL`. 수집기는 이를 다음과 같이 다룬다.
+- 이전 상태 색인은 `present=1` 행만 읽으므로 executor 가 루트 밖으로 보낸 행은 vanished 가 되지 않는다 → `deleted` 이벤트·`stale` 전이 없음.
+- executor 가 루트 안의 새 경로로 옮긴 행은 다음 scan 에서 경로·identity 가 그대로 일치 → 이벤트 없음, 새 항목 없음.
+- 수집기는 `deleted_run_id IS NULL AND present=0` 행을 되살리거나 지우지 않는다(압축은 06 §8 이 그 연산의 `finished_at` 기준으로 처리). undo 가 원위치로 되돌리면 executor 가 다시 `present=1` 로 만든다.
+- 휴지통(`trash`) 결과 경로는 내장 제외(§2.2-1)라 어떤 루트에도 들어오지 않는다.
+- 같은 run 안에서 수집기와 executor 가 겹치지 않는다(둘 다 `state.lock` 필요, 02 §7).
 
 ### 2.5 해시 정책
 
@@ -153,7 +204,7 @@ SHA-256 은 **지연 계산**한다. 모든 파일을 해시하지 않는다.
 | 해시하는 경우 | 조건 |
 |---|---|
 | 중복 후보 | 같은 `size` 를 가진 present `file` 엔트리가 2개 이상이고, 그중 하나 이상이 이번 리뷰 기간의 새 항목 후보(§4) |
-| 볼륨 간 이동 2차 매칭 | §2.4 |
+| 볼륨 간 이동 2차 매칭 | §2.4 — **결과는 메모리에서만 쓰고 `file_entries.sha256` 에 저장하지 않는다**(06 §6 해시 저장 규칙: vault 판정 전에 계산한 해시). 이 해시는 vault 단계(§0 의 4)보다 먼저 계산되기 때문이다 |
 | vault 지문 | 05 가 요청(`fingerprint_sha256`) |
 | 계획 시점 | 08 (`pre_sha256`) — collect 가 아닌 plan 이 요청 |
 
@@ -189,7 +240,7 @@ FR-CORE-008, 02 §10.6. **어떤 단계도 iCloud 다운로드를 유발하지 �
 - 엔트리·이벤트는 정상 기록(메타데이터는 로컬에 있음). APFS 는 dataless 파일에도 논리 크기를 보고하므로 `size_bytes` 는 그 값.
 - 다운로드됨 ↔ dataless 전환(같은 inode, 플래그만 변함, size·mtime 동일)은 **이벤트가 아니다**. `flags` 만 갱신한다. 전환 후 기존 `sha256` 은 유지하되 다시 계산하지 않는다.
 - 구형 자리표시자 `.<name>.icloud` 가 사라지고 같은 디렉터리에 `<name>` 이 나타나면(다운로드 완료) 같은 엔트리로 보고 경로만 갱신, 이벤트 없음. 반대 방향도 같다.
-- 항목 생성은 가능(메타데이터 기반). 집계 `W_DATALESS_SKIPPED`(count). 허용 동작은 `keep`/`keep_always`/`defer` 만(02 §10.1 예외 2) → 제안도 이 안에서만(§13).
+- 항목 생성은 가능(메타데이터 기반). 집계 `W_DATALESS_SKIPPED`(count). 허용 동작은 `keep`/`keep_always`/`defer` 만(02 §10.1 예외 2, 위치·게이트 무관) → 제안도 이 안에서만(§13).
 
 ### 2.7 다운로드 출처
 
@@ -222,7 +273,7 @@ effective_time(moved/deleted) = this_scan_started_at
 
 - 항목의 `review_date` = `max(review_date(effective_time), 가장 최근에 생성된 review_sessions.review_date)`.
   이유: 이미 열린 세션보다 과거 날짜로 귀속되면 이월(06 §4.2, 세션 최초 개설 시 1회)에서 빠져 다음 날까지 보이지 않는다.
-- 결정: 세션 행은 `review` 모듈의 `ensure_session(D)` 한 곳에서만 만들고, 06 §4.2 의 이월 1단계는 **세션을 처음 만드는 트랜잭션**에서 실행한다. `scan.run` 의 review 단계(§0 의 8)가 오늘 세션이 없으면 먼저 만들 수 있다(그룹 행은 `session_id` 가 필요하므로). → 06 §4.2 문구(“`review.summary` 가 처음 열 때”)를 “세션이 처음 생성될 때”로 고쳐야 한다(보고서 참고).
+- 세션 행은 `review.ensure_session(D)` 한 곳에서만 만들고, 06 §4.2 의 이월 1단계는 **그 세션을 처음 만드는 트랜잭션에서 한 번만** 실행된다. `scan.run` 의 review 단계(§0 의 8)는 그룹 행에 `session_id` 가 필요하므로 오늘 세션이 없으면 `ensure_session(오늘)` 을 먼저 부른다. 과거 날짜 세션은 만들지 않는다 — 위 `max(...)` 규칙 때문에 수집기가 과거 날짜 세션을 필요로 하는 경우는 없다(항목의 `review_date` 가 과거여도 그룹은 오늘 세션에 만든다).
 - 세션 지표(`review_sessions.stats_json`)의 `new_files` / `modified_files` / `deleted_files` = 해당 `review_date(effective_time)` 를 갖는 `file_events` 중 `file_level=1` 루트의 `kind IN ('file','package')` 이벤트 수(`moved` 는 별도, 같은 엔트리의 같은 날 중복 `modified` 는 1회). `new_apps`, `new_packages` 는 §11.
 
 ### 3.4 기준선(첫 스캔)
@@ -252,6 +303,8 @@ effective_time(moved/deleted) = this_scan_started_at
 | `modified` | 아니오. 열린 항목의 크기·mtime 갱신, `sha256` 무효화 → 중복 그룹 재계산 |
 | settle 중, dataless 라도 | dataless 는 항목 생성 가능(메타데이터 기반), settle 중은 다음 run |
 | 보안 자산(05 판정) | vault 가 `security_asset` 항목을 만든다(05). intel 은 카테고리만 `security_asset` 로 확정 |
+| 열린 `decided` 항목(결정 후 계획 전)의 파일이 `modified` | 새 항목 없음, 상태 유지. 스냅샷 필드만 갱신. `plan.create` 가 “결정 후 내용 변경”으로 제외하면서 `last_error_code='E_STALE'` 을 남긴다(06 §4.1, 08) — 수집기는 이 값을 지우지 않는다 |
+| **재탐지 예외**: 엔트리의 마지막 항목이 `stale` + `closed_reason='subject_changed'` 이고 열린 항목이 없음 | 다음 scan 에서 엔트리가 여전히 `present=1` 이면(이벤트 종류 무관) 새 항목을 **한 번** 만든다(`review_date` = 오늘 규칙 §3.3, 이유 “실행 직전 내용이 바뀌어 건너뛴 파일 — 다시 판단해 주세요”). 그 새 항목이 다시 종결되면 일반 규칙으로 돌아간다(06 §4.1 예외, 08 R7) |
 
 `subject_key` = `file:<dev>:<inode>` (06). 같은 subject_key 의 열린 항목이 이미 있으면 새 항목을 만들지 않는다(부분 유니크 인덱스가 최종 방어선). 종결된 항목(`keep` 등)이 있는 파일은 다른 루트로 이동하지 않는 한 다시 묻지 않는다.
 
@@ -312,7 +365,7 @@ effective_time(moved/deleted) = this_scan_started_at
 - 결과는 `file_text`(`source='vision_ocr'`, 16KB 절단, `text_enc`)에만 저장. 로그·봉투·리포트 금지(02 §13).
 - OCR 텍스트에 주민등록번호 패턴 → 민감도 `patient`(FR-SO-006 AC). 비밀 패턴 → 05 의 `plaintext_secret` 판정 경로로 넘김. 판정 규칙의 소유는 07(민감도)·05(비밀).
 - OCR 은 분류 신호로만 쓴다: 프로젝트 이름 일치(§8.3 신호 C), 앱 이름 일치(그룹 제목 “Xcode 스크린샷” 등).
-- 이름 변경 제안(`rename`, op_type M6)은 06 `decision_action` 에 `rename` 값이 없어 현재 계약으로는 표현할 수 없다 → 보고서 참고. 그때까지 OCR 은 그룹핑·민감도에만 쓴다.
+- 이름 변경 제안(M6): `rename` 은 decision action 이다(02 §5.3 — `--dest` 에 같은 디렉터리 안의 새 전체 경로). 스크린샷 OCR 결과로 `suggested_action='rename'`, `suggested_dest=<같은 디렉터리>/<YYYY-MM-DD> <주제>.<ext>` 를 제안할 수 있다. 주제 문자열 규칙: OCR 첫 줄 또는 앱 이름에서 파일명 금지 문자(`/`, `:`, 제어문자) 제거, 40자 이내, 비밀·주민등록번호·전화번호 패턴이 있으면 제안하지 않음(민감 정보가 파일명으로 새어 나가지 않게). confidence 0.5. 같은 이름이 이미 있으면 ` 2`, ` 3` … 접미사(실제 충돌 처리는 08). `sensitivity ≥ patient`, iCloud·dataless 항목에는 제안하지 않는다(어차피 허용 동작에 없음).
 
 ---
 
@@ -457,14 +510,14 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 | 순위 | `group_key` | 대상 | 제목 예 (title) | 그룹 `category` |
 |---|---|---|---|---|
 | 1 | `vault:new` | category `security_asset` (05) | “새 보안 자산 N개” | `security_asset` |
-| 2 | `habit:<rule_id>` | 활성 학습 규칙이 결정한 항목 (07) | “습관 항목 — 설치 완료된 DMG 정리” | 항목 카테고리 |
-| 3 | `duplicate:<sha256 앞 16자>` | 정확 중복 그룹 구성원(§12.1) | “같은 파일 3개” | 구성원 카테고리 |
+| 2 | `habit:<policy_rule_id>` | 활성 학습 규칙이 결정한 항목 (07). 키의 숫자는 `policy_rules.id`(외부 표기 `prl_`) | “습관 항목 — 설치 완료된 DMG 정리” | 한 카테고리면 그 값, 아니면 NULL |
+| 3 | `duplicate:<sha256 앞 16자>` | 정확 중복 그룹 구성원(§12.1) | “같은 파일 3개” | 구성원 카테고리(확장자가 달라 섞이면 NULL) |
 | 4 | `version:<family 해시 16자>` | 문서 버전 가족(§12.3) | “‘사업계획서’ 버전 4개” | `document` |
 | 5 | `installer:installed` | 설치 완료 판정 | “설치가 끝난 설치 파일” | `installer` |
 | 6 | `installer:extracted` | 압축 해제 완료 zip(§7.3) | “이미 압축을 푼 파일” | `compressed` |
 | 7 | `installer:pending` | 그 외 installer | “아직 설치하지 않은 설치 파일” | `installer` |
-| 8 | `project:<project_id>` | 프로젝트 확정(≥0.6) 항목 | “PL-Agent · 오늘의 작업 파일 7개” | 구성원 중 최다 카테고리 |
-| 8a | `ai:<sha256(label+review_date) 앞 16자>` | (M6) AI 가 묶은 작업 그룹. 순위 1~8 에 해당하지 않는 항목만(07 §8.6) | AI 제안 라벨 | 구성원 중 최다 카테고리 |
+| 8 | `project:<project_id>` | 프로젝트 확정(≥0.6) 항목 | “PL-Agent · 오늘의 작업 파일 7개” | 구성원이 한 카테고리면 그 값, 아니면 NULL(혼합) |
+| 8a | `ai:<sha256(label+review_date) 앞 16자>` | (M6) AI 가 묶은 작업 그룹. 순위 1~8 에 해당하지 않는 항목만(07 §8.6) | AI 제안 라벨 | 한 카테고리면 그 값, 아니면 NULL |
 | 9 | `screenshot:recording` | 화면 기록 | “화면 기록 N개” | `screenshot` |
 | 10 | `screenshot:day` | 그 외 스크린샷 | “오늘의 스크린샷 N장” | `screenshot` |
 | 11 | `devcache:inactive` / `devcache:active` | §10 | “비활성 프로젝트 개발 캐시 (4.2GB)” | `dev_cache` |
@@ -480,7 +533,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 - `sort_order`: vault → habit → duplicate → installer → project → screenshot → 나머지(확보 용량 내림차순) → git/app/package/login. 이유: 보안 경고 먼저, “한 번에 끝나는” 그룹 다음.
 - 그룹 제안(`suggested_action/dest/source`): 구성원 중 제안이 있는 항목의 제안이 **모두 같으면** 그 값, 아니면 NULL. `rationale` = 대표 이유.
 - 이월 항목(06 §4.2)은 새 세션에서 같은 규칙으로 그룹 키를 다시 계산해 재배정한다. 이월 항목만으로 이뤄진 그룹도 같은 키(제목에 “(이월 N)” 추가).
-- 그룹 `category` 는 단일 enum 이라 혼합 그룹(project)은 최다 카테고리로 둔다 → 06 에 혼합 표기 방법이 없음(보고서 참고).
+- 그룹 `category` 는 구성원 카테고리가 하나면 그 값, 둘 이상이면 NULL(06 `review_groups.category`: NULL = 혼합 그룹). 순위 16 의 그룹은 정의상 단일 카테고리.
 
 ---
 
@@ -556,7 +609,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 ### 11.3 로그인 항목 (`collect/login_items.py`, 주간)
 
 - 실행 조건: `app_meta.last_login_items_scan_date` 로부터 7일 경과 또는 명시 실행(FR-AM-004).
-- 소스(원천과 권한 이슈는 09 가 확정): `~/Library/LaunchAgents/*.plist` → `launch_agent_user`, `/Library/LaunchAgents/*.plist` → `launch_agent_global`, `/Library/LaunchDaemons/*.plist` → `launch_daemon`, 로그인 항목 → `login_item`(09).
+- 소스는 LaunchAgent/LaunchDaemon plist **만**이다: `~/Library/LaunchAgents/*.plist` → `launch_agent_user`, `/Library/LaunchAgents/*.plist` → `launch_agent_global`, `/Library/LaunchDaemons/*.plist` → `launch_daemon`. 시스템 설정의 “로그인 항목”(BTM)은 공개 API 가 없어 수집하지 않는다(06 `login_item_kind`). plist 는 `plistlib` 로 읽기만 하고 `launchctl`·`osascript` 는 쓰지 않는다. 권한 이슈는 09.
 - `label` = plist `Label`(없으면 파일명), `program_path` = `Program` 또는 `ProgramArguments[0]`.
 - 식별 `(kind, label)`. DayClose 자신의 `com.dayclose.scheduler` 는 제외.
 - 새 항목 → 항목 `login_item`, 그룹 `login:new`, 이유 “새 백그라운드 서비스: <label>”(label 은 표시 가능 — 비밀 아님). 사라짐 → 리포트 줄.
@@ -572,7 +625,8 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 2. 같은 `size` 버킷 중 이번 리뷰 날짜의 새 항목이 하나 이상 포함된 버킷만 해시(§2.5).
 3. 같은 `sha256` 이 2개 이상이면 중복 그룹 `duplicate:<sha16>`.
 4. 남길 사본(keeper) 선택 — 위에서부터 처음 결정되는 규칙:
-   0. 사본 중 `trash` 가 허용되지 않는 것(iCloud 동기화 경로의 다운로드된 사본 등 — dataless 사본은 해시가 없어 애초에 후보가 아님)이 있으면 그중에서 고른다(둘 이상이면 아래 1·2 를 그 안에서 적용). 이유: 어차피 정리할 수 없는 사본을 남겨야 나머지 제안이 실행 가능하다. 모든 사본이 trash 불가면 그룹만 만들고 제안 없음.
+   0. 사본 중 `allowed_actions` 에 `trash` 가 **없는** 것(해제 전 iCloud 동기화 사본, 보호 등급 사본 등 — dataless 사본은 해시가 없어 애초에 후보가 아님)이 있으면 그중에서 고른다(둘 이상이면 아래 1·2 를 그 안에서 적용). 이유: 정리할 수 없는 사본을 남겨야 나머지 제안이 실행 가능하다. 모든 사본이 trash 불가면 그룹만 만들고 제안 없음.
+   0a. 결정: 게이트가 열려 iCloud 사본도 trash 가능하더라도, iCloud 동기화 사본과 비동기화 사본이 섞여 있으면 **iCloud 사본을 keeper 로** 둔다. 이유: 다른 기기 삭제로 전파되는 쪽을 지우는 제안을 기본으로 만들지 않는다. 모든 사본이 iCloud 동기화면 1·2 를 적용하고, 비keeper 의 `trash` 제안 이유에 “다른 기기에서도 삭제됩니다” 를 붙인다.
    1. 사본 중 정확히 하나가 `downloads`/`desktop`/`screenshots` 루트 **밖**(이미 정리된 위치)에 있으면 그것.
    2. 그 외에는 `mtime` 이 가장 최신인 사본(FR-SO-002 AC “최신 1개 keep”). 동률 → 경로 길이가 짧은 것 → 경로 사전순.
 5. keeper 가 리뷰 항목이면 제안 `keep`(confidence 0.9). 나머지 항목은 `trash`, 이유 “같은 파일이 <keeper display_path> 에 있습니다”, confidence 0.9.
@@ -626,7 +680,8 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 
 규칙:
 - 제안 동작은 항상 `allowed_actions`(policy 계산) 안이어야 한다. 아니면 제안을 버리고 `suggestion_source='none'`.
-- iCloud 항목·dataless 파일(허용 동작 `keep`/`keep_always`/`defer`): H2~H4·H7·H8·H10·H11 처럼 `trash`/`move`/`archive` 를 내는 규칙은 적용하지 않는다. 대신 근거가 있으면 **제안 동작 없이 이유만** 남긴다(예: “같은 파일이 ~/Downloads 에도 있습니다 — iCloud 쪽은 DayClose 가 정리하지 않습니다”). `keep` 이 근거 있는 경우(H5, H6, H9 최신본)만 그대로 제안.
+- dataless 파일, 그리고 `trash` 가 허용되지 않은(해제 전) iCloud 동기화 항목: `trash`/`move`/`archive`/`rename` 을 내는 규칙(H2~H4·H7·H8·H10·H11, OCR `rename` §6.1)은 적용하지 않는다. 근거가 있으면 **제안 동작 없이 이유만** 남긴다(예: “같은 파일이 ~/Downloads 에도 있습니다 — iCloud 쪽은 지금 정리할 수 없습니다”). `keep` 이 근거 있는 경우(H5, H6, H9 최신본)만 그대로 제안.
+- `trash` 가 허용된(게이트 열림, 다운로드됨) iCloud 동기화 항목: `trash` 를 내는 규칙(H2·H3·H4·H8·H10)은 적용할 수 있다. 단 (a) confidence 는 규칙 값에서 0.2 를 빼고 상한 0.7 — UI 일괄 기본 선택 기준(0.8)에 닿지 않게, (b) 이유 끝에 “(다른 기기에서도 삭제됩니다)”, (c) 이는 **제안일 뿐**이다 — 그룹 제안(`review_groups.suggested_action`) 계산에서 이 항목들은 제외하고, `decision.set --group` 은 이 항목을 trash 대상에서 건너뛴다(`W_PROTECTED_SKIPPED{reason:icloud_synced}`, 02 §10.1). `move`/`archive`/`rename` 을 내는 규칙(H7, H9 이전본 archive, H11, OCR rename)은 적용하지 않는다(v1 불허 확정).
 - confidence 는 “이 제안을 사용자가 받아들일 가능성”의 휴리스틱 추정이다. UI 는 0.8 이상만 그룹 일괄 버튼의 기본 선택으로 쓴다(03 이 표시 규칙 확정).
 - 이유 문구 규칙: 한국어 한 문장, 80자 이하, 보안 자산·환자 자료의 이름·경로 금지, 다른 파일 경로는 `display_path`(`~` 축약) 형태로만, 근거 수치 1개 포함 권장.
 - 이월 항목은 새 세션에서 제안을 다시 계산한다(설치 상태 등이 바뀌었을 수 있음). 사용자가 이미 결정한 항목은 제안을 바꾸지 않는다.
@@ -643,7 +698,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 | 순회 비용 | 파일당 `lstat` 1회(DirEntry 캐시), 디렉터리당 `scandir` 1회. 파일 내용 읽기 0회(변경 없는 파일) | |
 | DB 쓰기 | 루트별 1 트랜잭션, `executemany`, 변경분만 UPDATE. 변경 없는 엔트리는 `last_seen_run_id` 일괄 UPDATE 1문(루트 단위 `WHERE root_id=? AND present=1 AND id NOT IN 변경/삭제`) | |
 | 메모리 | 이전 상태 색인 ≈ 엔트리당 ~250B → 50만 엔트리 ≈ 125MB 상한. 초과 예상 시 루트별로 나눠 비교(루트 간 이동 2차 매칭은 vanished/appeared 목록만 전역 유지) | 02 §8 (DB 50만 파일 기준) |
-| 루트당 엔트리 상한 | `scan.max_entries_per_root` 기본 300,000. 초과 시 순회 중단, 루트 결과는 “부분”으로 처리(§2.4 보이지 않음 ≠ 삭제 적용 — 중단 이후 경로의 기존 엔트리는 유지), `W_PARTIAL_SCAN` | 실수로 `~` 전체를 루트로 등록한 경우 방어 |
+| 루트당 엔트리 상한 | `scan.max_entries_per_root` 기본 300,000. 초과 시 순회 중단, 루트 결과는 “부분”으로 처리(§2.4 보이지 않음 ≠ 삭제 적용 — 중단 이후 경로의 기존 엔트리는 유지), `W_TRUNCATED`(02 §9) | 실수로 `~` 전체를 루트로 등록한 경우 방어 |
 | 디렉터리당 엔트리 | 상한 없음, 단 50,000 초과 디렉터리는 그 디렉터리의 하위 디렉터리로 내려가지 않음 + `W_PARTIAL_SCAN` | 사진 덤프 폴더 |
 | 해시 | run 당 2 GiB, 파일당 64MB | §2.5 |
 | `mdls` | 파일 100개/호출, 호출당 타임아웃 10초, run 당 최대 2,000 파일(초과분 다음 run). 실패 → 해당 신호 없이 진행 | §2.7, §6 |
@@ -657,7 +712,7 @@ subject_key `repo:<project_id>`, category `git_repo`, 허용 동작 `acknowledge
 
 ---
 
-## 14a. 이 문서가 쓰는 설정·상태 키 (02 §9 / 06 `app_meta` 에 추가 필요)
+## 14a. 이 문서가 쓰는 설정·상태 키 (02 §9 `[scan]`, 06 `app_meta` 키 목록에 반영됨)
 
 ```toml
 [scan]
@@ -682,11 +737,14 @@ devcache_min_bytes = 104857600      # §10
 | E8 | 폴더 이름변경(하위 1,000개) | `moved` 1개(디렉터리), 하위 경로 일괄 갱신 |
 | E9 | 하위 폴더 권한 거부 | 그 하위 기존 엔트리 `present` 유지, `W_PERMISSION_SKIPPED` |
 | E10 | 외장 볼륨 분리 | 루트 건너뜀, 엔트리 유지, 항목 `stale` 안 됨 |
-| E11 | dataless 파일 | 해시·내용 읽기 0(open 감시 래퍼로 검증), 항목은 생성, `allowed_actions` = keep/keep_always/defer (FR-CORE-008) |
+| E11 | dataless 파일 | 해시·내용 읽기 0(open 감시 래퍼로 검증), 항목은 생성, `is_dataless=true`, `allowed_actions` = keep/keep_always/defer, `blocked_reasons` 전부 `dataless` (FR-CORE-008) |
 | E11a | dataless 디렉터리 | `scandir` 0, 하위 기존 엔트리 유지 |
 | E11b | 파일이 다운로드됨 → 다시 dataless 로 내려감 | 이벤트 0, `flags` 만 갱신 |
 | E11c | `~/Documents` 와 iCloud 쪽 경로가 같은 (dev, inode) 디렉터리 | 한 번만 순회 |
-| E11d | iCloud 항목과 Downloads 의 같은 파일(다운로드된 상태) | iCloud 사본이 keeper, Downloads 사본만 `trash` 제안 |
+| E11d | iCloud 항목과 Downloads 의 같은 파일(다운로드된 상태) | 게이트 열림/닫힘 모두 iCloud 사본이 keeper, Downloads 사본만 `trash` 제안 |
+| E11e | 게이트 닫힘, 다운로드된 iCloud 설치 파일 | 제안 동작 없음, 이유만. `blocked_reasons.trash=icloud_synced` |
+| E11g | 루트 `icloud_synced_mode=no` 인데 `~/Library/Mobile Documents/com~apple~CloudDocs/Desktop` 존재(S2) 또는 항목이 dataless(S3) | 루트 실효값 1(`detected`) 또는 항목 `icloud_synced=true` — 사용자 `no` 보다 실시간 신호 우선 |
+| E11f | 게이트 열림, 다운로드된 iCloud 설치 파일 | `trash` 제안 confidence ≤ 0.7 + 전파 문구, 그룹 제안에서 제외, `--group` 결정 시 건너뜀 |
 | E12 | 01:30 생성 파일, 21:00 스캔 | 전날 리뷰 날짜 귀속(FR-DR-002), 단 전날 세션 이후 세션이 이미 있으면 그 날짜 |
 | E13 | 같은 파일 3개(64MB 이하) | 그룹 1, 최신 1개 `keep`, 나머지 `trash` (FR-SO-002) |
 | E14 | `Foo.dmg` + `Foo.app`(가짜 Info.plist) | `trash`, “설치 완료된 설치 파일” (FR-SO-001) |

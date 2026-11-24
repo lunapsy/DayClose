@@ -81,7 +81,7 @@
 | 우 | 인스펙터 토글 (⌥⌘I) | 오른쪽 인스펙터 표시/숨김 |
 | 우 | 검색 (⌘F) | 현재 목록의 `display_name` 클라이언트 필터 |
 
-결정: 과거 날짜 열람 시 `review.summary --review-date D` 를 호출한다(이 명령은 W 이며 그 날짜 세션이 없으면 만든다 — 과거 날짜에 대해 세션을 새로 만들지 않도록 10 확인 필요, §13 R2). M4 에서는 “오늘”과 이미 존재하는 세션 날짜만 메뉴에 표시한다.
+결정: 과거 날짜 열람 시 `review.summary --review-date D` 를 호출한다. 10 문서 확정: 세션이 없는 과거 날짜 → `E_NOT_FOUND`(세션을 만들지 않음, 메뉴에서 숨김), 세션이 있는 과거 날짜 → 이월 없이 재계산, 미래 날짜 → `E_USAGE`. 과거 날짜 화면은 상단에 “11월 20일 결산 보기” 띠를 두고, 결정 입력은 그대로 가능(열린 항목은 오늘 세션과 같은 항목).
 
 ## 2. 공통 표시 규칙
 
@@ -98,6 +98,7 @@
 | `archive` | 보관 | A | `archivebox` | 보라 |
 | `defer` | 보류 | S | `clock` | 회색 |
 | `acknowledge` | 확인 | K(대체, §5.2) | `eye` | 회색 |
+| `rename` (M6) | 이름 바꾸기 | R | `pencil` | 주황 |
 
 `item_category`: screenshot 스크린샷 · image 이미지 · document 문서 · installer 설치 파일 · compressed 압축 파일 · media 동영상·오디오 · code 소스 코드 · folder 폴더 · misc 기타 · dev_cache 개발 캐시 · security_asset 보안 자산 · app 앱 · package 패키지 · git_repo Git 프로젝트 · login_item 로그인 항목.
 
@@ -187,6 +188,7 @@ struct ReviewScreenState {
 | `pending` 에 이 항목의 요청이 있음 | `.saving(action)` | 결정 배지 + 작은 진행 표시. 키 입력은 계속 받음(같은 항목에 새 입력이 오면 큐잉, §3.4) |
 | `decision == nil` 이고 `deferred_until` 없음/지남 | `.undecided` | 제안 칩만 |
 | `deferred_until > reviewDate` | `.deferred(until)` | “11월 27일까지 보류” |
+| `state == decided` 이고 `last_error_code == "E_STALE"` | `.needsRedecision` | 주황 배지 “내용이 바뀜 — 다시 판단 필요”(06 §4.1: `plan.create` 가 결정 후 바뀐 파일을 제외). 실행 대기 목록 맨 위 “다시 판단 필요 N개” 섹션. 새 결정 키를 누르면 그대로 `decision.set`(재결정), ⌘Z/[결정 취소]는 `decision.undo` |
 | `state == decided` | `.decided(action, dest)` | 결정 배지 |
 | `state == planned` | `.planned` | “실행 대기” 배지, 결정 키 비활성(`decision.undo` 불가, 06 §4.1) |
 | `state == executed/undone/failed/stale` | 해당 | §2.1 |
@@ -232,7 +234,7 @@ K/D/A/M/S·버튼·그룹 체크박스는 모두 이 절차를 따른다.
 |---|---|
 | 앱 활성화(`scenePhase == .active`) 후 마지막 조회 5분 경과 | `review.summary` |
 | 예약 스캔 완료 분산 알림(09 §8.3) | 배너 “새 스캔 결과가 있습니다” + 자동 `review.summary` (편집 중 포커스·선택은 유지) |
-| ⌘R 스캔 | `scan.run --trigger app --progress ndjson` → 진행 이벤트(`phase`: fs/git/vault/apps/brew/login_items/review)를 사이드바 하단·툴바에 “파일 확인 중… 5,120개” 로 표시 → 완료 후 `review.summary` |
+| ⌘R 스캔 | `scan.run --trigger app --progress ndjson` → 진행 이벤트(`phase`: fs/git/vault/apps/brew/login_items/review)를 사이드바 하단·툴바에 “파일 확인 중… 5,120개” 로 표시 → 완료 후 `review.summary`. 진행 중 [취소] → serve 제어 줄 `{"control":"cancel","target":"<요청 id>"}`(10 문서): 다음 루트 경계에서 멈추고 원래 요청이 `E_CANCELLED`(02 §5.5, 종료 코드 130)로 끝나면 “스캔을 취소했습니다(일부 폴더만 확인됨)” + `review.summary` 재조회. 취소 가능한 명령은 `scan.run`·`ai.classify` 뿐이라 [취소] 버튼도 이 둘의 진행 표시에만 있다 |
 | 리뷰 날짜 경계(`review.day_boundary`, 기본 04:00) 통과 | 배너 “새 결산일(11월 25일)이 시작되었습니다” [새 결산 열기] → `review.summary`(날짜 인자 없이; 날짜는 core 가 계산). 자동 전환하지 않음(작업 중 화면이 바뀌지 않도록) |
 | 결정 응답 | 지표만 디바운스 재조회 |
 
@@ -302,7 +304,8 @@ K/D/A/M/S·버튼·그룹 체크박스는 모두 이 절차를 따른다.
 | `SummaryMetricsBar` | 주 카드 4개: 검토 대상 `items_total`, 검토 완료 `items_decided / items_total`, 휴지통 예정 `trash_planned` · `pending_plan_bytes`, 예상 검토 시간 `estimated_review_minutes` | 값이 없으면(구버전 core) 예상 시간은 PRD FR-DR-001 공식으로 앱이 계산: ⌈(그룹 수×5 + 그룹 없는 항목 수×3)/60⌉. 카드 클릭: 검토 대상 → 첫 미결 그룹, 휴지통 예정 → 실행 대기 |
 | 보조 지표 줄 | `new_files`, `modified_files`, `deleted_files`, `new_apps`, `new_packages`, `carried_over`, `deferred`, `suppressed_today` | 0 인 값은 숨김. “이월” 클릭 → 이월 항목 필터, “보류” → 보류 중 화면, “조용히 유지” → 설정 > 다시 묻지 않는 항목 |
 | 보안 카드 | `vault_new > 0` 또는 `vault_findings_open > 0` 일 때만 지표 줄 아래 “새 보안 자산 1 · 점검 필요 3 ›” | 클릭 → Secure Vault / Security Health |
-| `TodaySuggestionText` | 결정: 앱이 결정론적 템플릿으로 조합(AI 없음). 제안이 있는 그룹을 `sort_order` 순으로 최대 2개: “{title} {open_count}개({bytes})를 {action 문구}할 수 있습니다.” | 제안 있는 그룹이 없으면 숨김. 보안 자산 그룹은 문구에 넣지 않음 |
+| `TodaySuggestionText` | `review.summary.headline`(core `intel` 이 만든 한 문장, 10 §2.5) 그대로. `null` 이면 숨김 | 앱은 문장을 조합하지 않는다 |
+| `PendingApprovalBanner` (M5) | `plan.list {"state": "draft"}` 의 `total > 0` 이면 “승인 대기 계획 N개” [검토] → 가장 최근 draft 의 `PlanReviewSheet`, 오래된 draft 는 [취소](`plan.cancel`) 제공(08 §7: draft 는 만료가 없음) | 0 이면 숨김 |
 | `BannerStack` | §7 배너 | 최대 3개, 닫기 가능(같은 원인은 그날 다시 안 띄움) |
 | `GroupListView` / `GroupRowView` | §4.1.1 | `sort_order` 순. 열린 항목이 0 인 그룹은 하단 “완료된 그룹” 접힘 영역으로 |
 | `PendingPlanFooter` | `pending_plan.item_count > 0` 일 때 “실행 대기: N개 · X” + [선택한 정리 계획 검토하기] | M4: 실행 대기 목록 시트(§4.6, 실행 비활성). M5: `plan.create` |
@@ -335,7 +338,7 @@ K/D/A/M/S·버튼·그룹 체크박스는 모두 이 절차를 따른다.
 | → 또는 Return | 그룹 상세 열기 |
 | Space | 그룹의 미리보기 가능한 항목(`preview_policy == full`, dataless 아님)을 Quick Look 패널에 묶어 열기. ←/→ 로 넘김. 가능한 항목이 없으면 안내 “이 그룹은 미리보기를 제공하지 않습니다” |
 | X | 체크박스 토글(결정: Space 는 전 화면에서 미리보기로 통일하므로 체크는 X) |
-| K/D/A/M/S, ⇧K | 그룹 전체에 해당 동작(`decision.set --group`). 그룹 결정 규칙은 core 가 적용(보호 항목 제외). 허용 항목이 하나도 없으면 §5.3 안내 |
+| K/D/A/M/S, ⇧K | 그룹 전체에 해당 동작(`decision.set --group`). 키 활성 여부는 그룹의 `allowed_group_actions`(미결 항목들의 허용 동작 합집합, 10 문서)로 판단. core 는 이미 결정된 항목을 덮어쓰지 않고(`already_decided`), 동작을 허용하지 않는 항목은 건너뛰며(`W_PROTECTED_SKIPPED`), 적용 대상이 0개면 `E_PROTECTED` → §5.3 안내 |
 | ⌘Z / ⇧⌘Z | §3.5 |
 | ⌘⏎ | [선택한 정리 계획 검토하기] |
 
@@ -373,7 +376,8 @@ K/D/A/M/S·버튼·그룹 체크박스는 모두 이 절차를 따른다.
 - 필터: 전체 / 미결(`decision == nil`) / 이월(`carry_count ≥ 1`) / 결정됨. 클라이언트 필터(이미 받은 페이지 기준, 미결 필터 시 남은 페이지를 끝까지 받음).
 - 정렬(리스트·갤러리 공통): 이름, 용량, 수정일(기본: 갤러리는 수정일 오름차순, 리스트는 이름), 프로젝트.
 - 하단 `DecisionBar`: 선택 개수·합계 용량, 동작 버튼(키 힌트 포함). 선택 항목 중 하나라도 허용하지 않는 동작 버튼은 “일부 적용” 표시(예 `D 휴지통 (3/4)`), 전부 불허면 비활성 + 툴팁(§5.3 문구).
-- 기본 보기 모드(결정): `category ∈ {screenshot, image}` → 갤러리, `group_key` 가 `duplicate:` 로 시작 → 비교, 그 외 → 리스트. 사용자가 바꾼 모드는 `group_key` 접두사(`screenshot:` 등)별로 `UserDefaults` 에 기억.
+- 그룹 `category == null` = 혼합 그룹(`project:`, `ai:`, `habit:` 등, 06 `review_groups.category`): 아이콘 `square.stack.3d.up`, 머리글에 종류별 개수(“스크린샷 3 · 문서 4”).
+- 기본 보기 모드(결정): `category == null` → 리스트, `category ∈ {screenshot, image}` → 갤러리, `group_key` 가 `duplicate:` 로 시작 → 비교, 그 외 → 리스트. 사용자가 바꾼 모드는 `group_key` 접두사(`screenshot:` 등)별로 `UserDefaults` 에 기억.
 
 #### 4.2.1 갤러리 모드 — `GalleryGridView`
 
@@ -474,13 +478,15 @@ K/D/A/M/S·버튼·그룹 체크박스는 모두 이 절차를 따른다.
 
 **항상 유지(⇧K)**: 모달 없음. 토스트 “앞으로 이 파일은 묻지 않습니다. 설정 > 다시 묻지 않는 항목에서 해제할 수 있습니다.” [실행 취소]. 처음 1회만 토스트 대신 짧은 설명 팝오버(다시 보지 않기).
 
+**이름 바꾸기(R, M6)**: 팝오버에 현재 이름과 제안 이름(`suggestion.action == "rename"` 이면 `suggestion.dest` 의 파일 이름 — OCR 기반 제안, 07). 같은 폴더 안에서 이름만 편집(경로 구분자 `/` 입력 불가, 확장자는 기본 유지) → `decision.set {"action":"rename","dest": "<같은 디렉터리>/<새 이름>"}`(02 §5.3). M6 전에는 `blocked_reasons.rename = "not_yet_available"` 이라 버튼이 비활성으로 보이고 R 키는 §5.3 안내.
+
 **보관(A)**: `config.archive.root` 가 비어 있으면 결정 전에 막는다 — “보관 폴더가 설정되지 않았습니다” [보관 폴더 설정…] → 설정 > 보관. 설정돼 있으면 즉시 `decision.set {"action":"archive"}`(목적지는 plan.create 가 결정, 06 decisions.dest_path 주석).
 
 **토스트 `ActionToast`**: 화면 하단 중앙, 4초, 하나만(새 토스트가 이전 것을 교체). 결정 토스트는 “휴지통 지정 3개 [실행 취소 ⌘Z]”. VoiceOver 는 `AccessibilityNotification.Announcement` 로 같은 문구를 읽는다.
 
 ### 4.5 보류 중 — `DeferredItemsView`
 
-데이터: `item.list {"open": true}` 결과 중 `deferred_until > review_date` 인 항목(클라이언트 필터 — §13 R3 에서 서버 필터 요청). 리스트 모드 표(“다시 표시: 11월 27일” 열 추가). 같은 키로 바로 결정 가능. 빈 상태: “보류 중인 항목이 없습니다.”
+데이터: `item.list {"deferred": true}`(10 문서 확정 플래그). 이월 필터는 `item.list {"carried": true}`. 리스트 모드 표(“다시 표시: 11월 27일” 열 추가). 같은 키로 바로 결정 가능. 빈 상태: “보류 중인 항목이 없습니다.”
 
 ### 4.6 실행 대기 — `PendingExecutionView` 와 계획 검토·승인 시트 — `PlanReviewSheet`
 
@@ -506,7 +512,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
  "summary": {"trash": 6, "move": 2, "archive": 1},
  "operations": [
    {"id": "op_33", "seq": 1, "item_id": "itm_128", "op": "trash", "display_name": "Foo.dmg",
-    "src_display": "~/Downloads", "dst_display": "휴지통", "size_bytes": 601991168,
+    "display_path": "~/Downloads", "dst_display_path": "휴지통", "size_bytes": 601991168,
     "cross_device": false, "creates_dirs": false, "state": "pending"}],
  "excluded": [{"item_id": "itm_140", "display_name": "AuthKey_••••••.p8", "reason_code": "E_PROTECTED"}]}
 ```
@@ -525,7 +531,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 │ ▸ 제외된 항목 (1) — 보안 자산은 계획에 넣지 않습니다                 │
 │                                                              │
 │ 휴지통으로 보낸 항목은 DayClose 기록에서 되돌릴 수 있습니다.           │
-│ 계획 번호 9f2c…e1                                              │
+│ 계획 번호 9f2c1a7b (plan_hash_short)                             │
 │                                    [취소]  [승인하고 실행 ⌘⏎]   │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -533,11 +539,15 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 - 승인 버튼은 시트가 보여주는 `plan_hash` 그대로 `plan.approve` 에 보낸다(FR-VR-007). 시트를 연 뒤 `plan.show` 로 다시 받은 해시가 다르면 버튼 비활성 + “계획이 바뀌었습니다. 다시 확인하세요.” [새로고침].
 - 승인 버튼은 기본 버튼이지만 시트가 뜬 직후 1초간 비활성(실수 방지). ⌘⏎ 로만 키보드 승인(⏎ 단독은 안 됨).
 - 오류: `E_APPROVAL_MISMATCH` → 새로고침 유도. `E_STALE`(plan.create 시점) → 해당 항목 표시 후 재생성. `E_ARCHIVE_TARGET_MISSING` → 보관 설정 유도. `E_VOLUME_TIMEOUT`/`E_VOLUME_UNAVAILABLE` → “보관 폴더가 있는 외장 볼륨이 연결되지 않았거나 응답하지 않습니다.”
-- 승인 방식 강화(Touch ID 등)는 08 문서의 결정을 따른다(§13 R8, 09 §11.3).
+- 승인 수단(08 §6.5): Secure Enclave 서명 승인이 구현되기 전(M7 “승인 강화”, 09 §12 V11)에는 앱이 서명 없이 `plan.approve` 를 보내고 core 가 시스템 확인 대화상자(`native_dialog`)를 띄운다 → 사용자는 [승인하고 실행] 후 대화상자를 한 번 더 누른다. 시트에 “macOS 확인 창이 뜹니다” 를 미리 표시하고, 대화상자 거부·120초 경과 → `E_APPROVAL_DENIED` → “승인하지 않았습니다. 계획은 그대로 남아 있습니다.”
+- M7 부터 모든 승인은 Touch ID/로그인 암호를 거친다(PRD C12): 서명이 동작하는 기기에서는 앱의 Secure Enclave 서명(`app_signature`, 서명마다 Touch ID/암호), 아니면 core 가 띄우는 `dayclose-native confirm`(LocalAuthentication). 결정: 이때부터 아래의 앱 자체 `LAContext` 확인은 끈다(Touch ID 가 두 번 뜨지 않게). M5~M6 에만 쓰는 장치다.
+- iCloud 전파 줄: 계획에 `icloud_propagates` 연산이 하나라도 있으면 요약 바로 아래에 별도 줄(경고 색 + `icloud.slash`) “N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다” + [목록 보기]. 해당 연산 행에도 같은 아이콘. 별도 체크박스·추가 단계는 없다 — [승인하고 실행] 이 그 확인이다(core 가 `approvals.icloud_ack=1` 기록, 02 §10.3 7). `E_APPROVAL_REQUIRED{reason: icloud_ack_missing}` 를 받으면 “계획을 다시 확인해야 합니다” [새로고침].
+- 보관 연산이 있고 `W_ARCHIVE_UNENCRYPTED` 가 오면 시트에 정보 줄(차단 안 함).
+- (M5~M6) 앱이 [승인하고 실행] 앞에 띄우는 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`(Touch ID/암호, 설정 “승인 전 Touch ID 확인”, 기본 켬)는 **UI 실수 방지 장치일 뿐 core 가 보장하는 사람 확인이 아니다**(08 §6.5-6). 사람 게이트의 보장은 core 가 고른 수단(`native_dialog`, 이후 서명된 `app_button`)이 맡는다. 설정 화면 설명에도 이 문장을 그대로 둔다.
 
 ### 4.7 실행 진행과 완료 리포트 — `PlanProgressView`, `CompletionReportView` (M5)
 
-- 진행: `plan.apply` 의 진행 이벤트(`phase: "apply"`, `done`, `total`) → 시트 안 진행 막대 “6 / 9 처리 중”. 취소 버튼 없음(연산 단위 커밋 중 중단은 recover 대상이므로 사용자 중단을 제공하지 않음, 결정). 실행 중 앱 종료 시 09 §4.6 의 종료 지연 대화상자.
+- 진행: `plan.apply` 의 진행 이벤트(`phase: "apply"`, `done`, `total`) → 시트 안 진행 막대 “6 / 9 처리 중”. [중지] 버튼(취소 요청이 아님 — apply 는 취소 요청을 받지 않는다): 확인 “진행 중인 작업 하나를 마치고 멈춥니다. 이미 끝난 작업은 그대로 둡니다.” → 앱이 core 자식에 `SIGINT`(09 §4.6) → 응답 `E_PARTIAL` + `data.resumable == true`(08 §7.6.2) → 결과 화면에 “멈춤: 6개 완료, 3개 남음” + [이어서 실행](같은 `plan.apply {"plan_id"}` — 승인 후 24시간 이내만: 결과 화면에 `approval.expires_at` 을 “오후 10:15 까지 이어서 실행 가능” 으로 표시하고, 지나면 버튼 대신 “승인이 만료되었습니다. 다시 검토하세요”(`E_APPROVAL_REQUIRED{approval_expired}`). 버튼 표시 여부는 계획의 `resumable`) / [남은 작업 취소](`plan.cancel`) / [완료된 것 되돌리기](`plan.undo`). 실행 중 앱 종료 시 09 §4.6 의 종료 지연 대화상자.
 - 결과(`ok` 또는 `E_PARTIAL` 의 `data.operations[*].state`):
 
 ```
@@ -551,7 +561,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- `op.state`: done ✓, skipped ⚠(`error_code` 문구 §7), failed ✕(재시도 안내: 항목이 `failed` 로 남아 다음 계획에 포함 가능).
+- `op.state`: done ✓, skipped ⚠(`error_code` 문구 §7), failed ✕(재시도 안내: 항목이 `failed` 로 남아 다음 계획에 포함 가능). 실제 놓인 위치는 `actual_dst_display_path`(휴지통 이름 충돌로 바뀐 이름 포함)로 표시.
 - [되돌리기…] 또는 ⌘Z → 확인 대화상자 “방금 실행한 9개 작업을 되돌릴까요? 휴지통·이동·보관한 파일이 원래 위치로 돌아갑니다.” [되돌리기] [취소] → `plan.undo {"plan_id"}`. 충돌(`E_DEST_EXISTS`) → “원래 위치에 같은 이름의 파일이 있습니다.” [이름을 바꿔 복원] (`on_conflict: "rename"`) [건너뛰기]. `E_UNDO_IMPOSSIBLE` → “휴지통이 비워져 되돌릴 수 없는 항목이 있습니다.”
 - 닫을 때 `items_open == 0` 이면 `review.close` 호출(결정: 사용자가 그날 정리를 끝냈다는 표시. 다음 `review.summary` 는 그대로 동작).
 
@@ -624,7 +634,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
  "findings": [{"id": "fnd_9", "finding": "expiring_soon", "severity": "high", "state": "open",
                "asset_id": "ast_6", "asset_masked_name": "distribution.p12",
                "title": "Apple Distribution 인증서 만료 임박", "message": "만료까지 23일 남았습니다.",
-               "recommendation": "Apple Developer 에서 새 인증서를 발급하세요.", "detected_at": "…"}]}
+               "remediation": "Apple Developer 에서 새 인증서를 발급하세요.", "detected_at": "…"}]}
 ```
 
 ```
@@ -646,9 +656,9 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 ```
 
 - 카드 정렬: severity(critical→info), 그다음 `detected_at`. 색 + 문구 + 아이콘(색만으로 구분 금지).
-- 카드 문구(`title`, `message`, `recommendation`)는 core(05) 가 준 그대로 쓴다. 앱이 조합하지 않는다(특히 `tracked_in_git` 의 “폐기·재발급” 권고, FR-SV-007).
+- 정확한 필드 이름·형태는 05 §11 이 기준(위 예시는 요지). 카드 문구(`title`, `message`, `remediation`)는 core(05) 가 준 그대로 쓴다. 앱이 조합하지 않는다(특히 `tracked_in_git` 의 “폐기·재발급” 권고, FR-SV-007).
 - `checks` 중 `status == ok` 는 하단 “✓ … — 정상” 줄.
-- [확인함] 버튼(발견 사항 `open → acknowledged`): 이를 수행하는 명령이 02 §5.3 에 없다 → 명령이 생기기 전까지 버튼을 표시하지 않는다(§13 R5).
+- [확인함] 버튼: 별도 명령 없음(10·05 확정). 그 자산의 열린 리뷰 항목에 `decision.set {"item_ids":[자산 item_id], "action": "acknowledge"}` 를 보내면 core 가 그 자산의 열린 발견 사항을 모두 `acknowledged` 로 바꾼다. 그래서 버튼 문구는 “이 자산 확인함(발견 사항 N건 모두)” 이고, 열린 리뷰 항목이 없는 자산의 카드에는 버튼을 두지 않는다(조건이 해소되면 core 가 `resolved` 로 바꿈). `keep`/`keep_always` 결정도 같은 효과이므로 Vault 화면의 K·⇧K 뒤 Health 숫자를 재조회한다.
 - `plaintext_secret`(일반 파일 속 비밀): 파일 이름은 core 가 준 표시 이름만, 줄 번호 표시 가능, 매치 내용 절대 없음. [파일 위치 보기] = Finder 에서 보기.
 
 ### 4.11 앱·패키지 — `InventoryView`, 프로젝트 — `ProjectsView`
@@ -659,7 +669,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 |---|---|---|---|
 | 앱 | `app.list` (`--new`, `--removed`) | 아이콘(`NSWorkspace.icon(forFile:)` — 앱 번들 아이콘 읽기), 이름, 버전, 출처(App Store / Homebrew / 직접 설치 / 알 수 없음), 크기, 마지막 사용(없으면 “알 수 없음”), 처음 발견 | 전체 / 새로 설치 / 삭제됨 / 버전 바뀜 / 90일 이상 미사용 |
 | Homebrew | `package.list` (`--manager`, `--new`) | 이름, 종류(formula/cask), 버전, 직접 설치 여부, 처음 발견 | 전체 / 새로 설치 / 직접 설치만 |
-| 로그인 항목 | `item.list {"category": ["login_item"]}` (목록 명령이 없음 — §13 R7) | 이름(label), 종류, 프로그램 위치, 처음 발견 | 미결만 |
+| 로그인 항목 | `item.list {"category": ["login_item"]}` (목록 명령 없음). 대상은 LaunchAgent/LaunchDaemon plist 뿐(`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`) — 탭 하단 고지 “시스템 설정의 ‘로그인 항목’ 목록은 macOS 가 공개하지 않아 표시하지 않습니다”(09 §10.5) | 이름(label), 종류, 프로그램 위치, 처음 발견 | 미결만 |
 
 - 행에 열린 리뷰 항목이 있으면 결정 배지와 K(확인)·⇧K(항상 유지)·S(보류) 사용 가능. D/A/M → “DayClose 는 앱·패키지를 삭제하지 않습니다.”
 - [Finder 에서 보기], 앱은 [앱 정보 보기](Finder 정보 창 대신 인스펙터에 Info.plist 요약 — core 가 준 값만).
@@ -687,14 +697,14 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 
 | 탭 | 항목 | 명령/저장소 |
 |---|---|---|
-| 일반 | 결산 날짜 경계(`review.day_boundary`, 시각 선택), 이월(`review.carryover`), 결정 후 다음 항목으로(앱), 기본 썸네일 크기(앱), 그룹 열 때 기본 보기 모드 초기화(앱) | `config.set` / `UserDefaults` |
-| 스캔 위치 | 루트 표: 경로(`display_path`), 종류(`scan_root_kind` 문구: 다운로드·데스크탑·스크린샷·문서·iCloud Drive·프로젝트·보안 추가 경로·사용자 지정), 상태(마지막 doctor: 정상 / 권한 없음 / 응답 없음 / 없음), [+] `NSOpenPanel` → 종류 선택 → `root.add {"path","kind"}`, [−] 확인 후 `root.remove {"root_id"}`. 제외 패턴 목록 편집(`scan.exclude_globs`), 프로젝트 폴더(`projects.roots`) | `root.*`, `config.set` |
+| 일반 | 결산 날짜 경계(`review.day_boundary`, 시각 선택), 이월(`review.carryover`), iCloud 동기화 파일 휴지통 허용(`icloud.allow_trash`, 기본 켬 — 설명 “다운로드된 iCloud 파일을 항목별로 휴지통에 넣을 수 있습니다. 다른 기기에서도 삭제됩니다. 실기기 확인이 끝난 버전에서만 동작합니다.”, M5), 결정 후 다음 항목으로(앱), 기본 썸네일 크기(앱), 그룹 열 때 기본 보기 모드 초기화(앱) | `config.set` / `UserDefaults` |
+| 스캔 위치 | 루트 표: 경로(`display_path`), 종류(`scan_root_kind` 문구: 다운로드·데스크탑·스크린샷·문서·iCloud Drive·프로젝트·보안 추가 경로·사용자 지정), 상태(마지막 doctor: 정상 / 권한 없음 / 응답 없음 / 없음), iCloud 열(`root.list` 의 `icloud_synced`·`icloud_synced_mode`·`icloud_synced_source`): 값 “동기화됨/동기화 안 됨” + 출처(`icloud_synced_source`: `detected` “자동 감지” / `user` “직접 지정” / `assumed` “확인 불가라 동기화로 간주”), 선택 [자동 · 동기화됨 · 동기화 안 됨] = `icloud_synced_mode`(기본 `auto`) → `root.set {"root_id", "icloud_synced": "auto"|"yes"|"no"}`(CLI `root set ROOT_ID --icloud-synced …`, M2). 표시 값은 실효값 `icloud_synced`. 루트 추가 시트에도 같은 선택(기본 자동) → `root.add {"path","kind","icloud_synced"}`. “동기화 안 됨” 으로 바꿀 때 확인: “이 폴더가 실제로 iCloud 와 동기화된다면 여기서 휴지통·이동한 파일이 다른 기기에서도 지워집니다.” (09 §12 V17), [+] `NSOpenPanel` → 종류 선택 → `root.add {"path","kind"}`, [−] 확인 후 `root.remove {"root_id"}`. 제외 패턴 목록 편집(`scan.exclude_globs`), 프로젝트 폴더(`projects.roots`) | `root.*`, `config.set` |
 | 보호 규칙 | `rule.list` 표: 종류(경로로 시작 / 글롭 / 확장자 / 프로젝트), 패턴, 보호 등급, 출처(기본 제공 / 내가 추가 / 설정). 기본 제공 규칙은 잠금(삭제 버튼 없음). [+] 시트 → `rule.add {"kind","pattern","protection","sensitivity"?}`. 환자 자료 파일 이름 패턴(`protection.patient_filename_patterns`), 주민번호 탐지(`protection.detect_rrn_in_text`) | `rule.*`, `config.set` |
 | 다시 묻지 않는 항목 | `suppression.list` 표: 대상(표시 이름·종류), 일치 방식, 만든 날짜. [해제] → `suppression.remove {"suppression_id"}` + 안내 “다음 스캔에서 다시 물어봅니다” | `suppression.*` |
 | 보관 | 보관 폴더(`archive.root`) 선택(`NSOpenPanel`), 배치 미리보기 `<root>/2026/11/파일명`, 외장이면 “연결되어 있을 때만 보관할 수 있습니다” | `config.set` |
 | AI | §4.13.1 | `config.set`, `ai.status` |
 | 알림·예약 | 매일 결산 시각(`review.daily_time`), 예약 실행 켜기(SMAppService 상태 표시: 켜짐 / 승인 필요 / 꺼짐 + [로그인 항목 설정 열기]), 알림 허용 상태 + [알림 설정 열기], 메뉴바에 표시 | `config.set` + 09 §8 |
-| 권한 | §4.14.2 FDA 상태 3종(앱 / core / 예약 실행), 폴더별 접근 상태(`core.doctor` 의 루트 결과), [진단 다시 실행], [전체 디스크 접근 권한 설정 열기] | `core.doctor`, 09 §7 |
+| 권한 | (M5) 승인 키: `core.app_key` 상태(`core.app_key {"action": "show"}` → `fingerprint_short`, `registered_at`) “등록됨 · 지문 앞 8자 / 없음”, [승인 키 만들기] = 앱이 Secure Enclave 키 생성 → `core.app_key {"action": "register", "public_key": "<SPKI DER base64>"}`(10 문서 `core.app_key` 절)(core 가 사람 확인 대화상자로 지문 확인, 09 §11.3), [폐기] = `revoke`(같은 확인). 09 §12 V11 통과 전에는 버튼 대신 “이 Mac 에서 아직 사용할 수 없습니다”. §4.14.2 FDA 상태 3종(앱 / core / 예약 실행), 폴더별 접근 상태(`core.doctor` 의 루트 결과), [진단 다시 실행], [전체 디스크 접근 권한 설정 열기] | `core.doctor`, 09 §7 |
 | 고급 | core 실행 파일 경로(앱 설정 `core.command`, [찾아보기…], [기본값]), core·계약·DB 버전(`core.version`), 상태 폴더 열기, 로그 폴더 열기(`~/Library/Logs/DayClose`), 로그 수준(`core.log_level`) | `UserDefaults`, `core.version` |
 
 설정 화면에 없는 것(결정, 소유자 답변 2026-11-24): NAS·SMB·원격 보관 대상 화면, 보관 대상 목록 관리, 환자 자료 폴더 지정. 보관은 “보관 폴더” 하나(`archive.root`)뿐이고, 모든 값은 **이 Mac 에만** 적용된다는 문구를 탭 상단에 둔다(02 §8.1).
@@ -718,8 +728,8 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 ```
 
 - 토글·선택은 `config.set`(`ai.enabled`, `ai.provider`, `ai.model`, `ai.allow_external`). “외부 공급자로 보내기 허용” 을 켤 때 확인 대화상자(위 “보내는 것/보내지 않는 것” 문구 반복) — 결정: 외부 전송은 명시적 2단계(토글 + 확인)로만.
-- 상태 줄은 `ai.status` 기준. 외부 공급자는 `enabled=true` + `allow_external=true` + 키 있음 셋 다일 때만 동작하고, 아니면 core 가 `E_AI_DISABLED`(02 §9) → 빠진 조건을 문장으로 표시. `ollama` 는 키·외부 허용 불필요(로컬).
-- [키 입력…]: `SecureField` 시트. 저장은 core 명령으로 보낸다(§13 R9) — 앱은 키를 `UserDefaults`·로그·클립보드에 두지 않고, 시트를 닫으면 메모리 값을 지운다. 명령이 생기기 전(임시): 시트 대신 안내 “터미널에서 `uv run --project core keyring set com.dayclose.ai anthropic` 을 실행하고 프롬프트에 키를 붙여 넣으세요(키가 명령 줄에 남지 않습니다).” 키 값 자체는 어떤 화면에도 다시 표시하지 않고 “저장됨/없음” 만.
+- 상태 줄은 `ai.status` 의 `usable`·`blocked_reason` 기준: `disabled` “AI 제안이 꺼져 있습니다” / `provider_none` “공급자를 고르세요” / `external_not_allowed` “외부 전송 허용이 꺼져 있습니다” / `key_missing` “API 키가 없습니다”. 외부 공급자는 `enabled=true` + `allow_external=true` + 키 있음 셋 다일 때만 동작하고, 아니면 core 가 `E_AI_DISABLED`(02 §9). `ollama` 는 키·외부 허용 불필요(로컬).
+- [키 입력…]: `SecureField` 시트(공급자 선택 포함) → [저장] = `ai.key.set {"provider": P, "key": K}` — serve 요청 본문으로 보내며(stdio 파이프 = CLI 의 stdin 에 해당, 02 §5.3 “키는 stdin 으로만”: argv 에 넣지 않음) 앱은 키를 `UserDefaults`·로그·클립보드·undo 에 두지 않고, 요청을 보낸 즉시 시트의 문자열을 비운다. 성공 후 `ai.status` 재조회로 “저장됨” 표시. [키 삭제] = 확인 후 `ai.key.remove {"provider": P}`. 키 값은 어떤 화면에도 다시 표시하지 않는다(“저장됨/없음” 만). 키는 core 가 Keychain(`com.dayclose.ai`/`<provider>`)에 만든다 — 앱이 Keychain 에 직접 쓰지 않음(09 §11.4).
 - 민감도 게이트 설명은 고정 문구(위). 수치(“지난 7일 AI 요청 12건, 제외된 항목 30개”)는 `ai.status` 가 주면 표시(07 문서의 `ai_requests` 감사).
 
 ### 4.14 온보딩 — `OnboardingFlow`
@@ -800,6 +810,7 @@ PlanReviewSheet ─[승인하고 실행]─▶ plan.approve {"plan_id","hash": �
 | A | 그룹 `archive` | `archive` | 〃 | 〃 | 차단 안내 |
 | M | 목적지 선택 후 그룹 `move` | 목적지 선택기 | 〃 | 패널 닫고 선택기 | 차단 안내 |
 | S / ⇧S | 그룹 `defer` / 날짜 | `defer` / 날짜 | 〃 | 〃 | 리뷰 항목 있으면 |
+| R (M6) | — (그룹 단위 이름 바꾸기 없음) | 이름 바꾸기 팝오버(§4.4) | 포커스 칸 | 패널 닫고 팝오버 | 차단 안내 |
 | 1~4 | — | — | 그 칸만 남기기 | — | — |
 | X | 체크박스(제안 수락) 토글 | 항목 선택 토글 | — | — | — |
 | ⌘Z / ⇧⌘Z | 결정 취소 / 다시 | 〃 | 〃 | 〃 | 〃 |
@@ -821,11 +832,13 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 
 ### 5.3 허용되지 않는 동작 키 (보호 항목)
 
-불허 동작은 키를 누르기 전에도 **보이게** 비활성이다: 인스펙터·`DecisionBar` 의 해당 버튼은 회색 + 자물쇠 아이콘, 버튼 줄 아래에 이유 한 줄(아래 표 문구, 툴팁만으로 숨기지 않음). iCloud Drive 루트 항목과 dataless 파일은 `allowed_actions` 가 `keep`/`keep_always`/`defer` 뿐이므로(02 §10.1 예외 2) D·A·M 이 항상 이 상태로 보이고, 셀에는 ☁︎ “iCloud 에만 있음(내려받지 않음)” 배지가 붙는다.
+불허 동작은 키를 누르기 전에도 **보이게** 비활성이다: 인스펙터·`DecisionBar` 의 해당 버튼은 회색 + 자물쇠 아이콘, 버튼 줄 아래에 이유 한 줄(아래 표 문구, 툴팁만으로 숨기지 않음). iCloud(02 §10.1 예외 2, PRD C11): dataless 파일은 D·A·M·R 모두 항상 비활성(`dataless`), 셀에 ☁︎ “iCloud 에만 있음(내려받지 않음)”. 다운로드된 iCloud 동기화 파일(항목 JSON `icloud_synced == true`)은 A·M·R 이 항상 비활성(`icloud_synced`)이고, D 는 core 의 해제 게이트(코드 상수 `TRASH_UNLOCK_VERIFIED` + 설정 `icloud.allow_trash`)가 열렸을 때만 `allowed_actions` 에 들어온다 — 앱은 게이트를 직접 보지 않고 `allowed_actions` 만 따른다. 동기화 경로 셀에는 `icloud` 배지가 붙는다.
+
+**“다른 기기에서도 삭제됨” 표시**(결정: 세 곳에서 같은 문구·아이콘 `icloud.slash`): `icloud_synced == true` 이고 `trash ∈ allowed_actions` 인 항목은 (1) 셀·행에 작은 경고 배지, (2) 인스펙터·`DecisionBar` 의 [D 휴지통] 버튼 옆 “다른 기기에서도 삭제됨” 문구, (3) D 로 결정한 뒤 결정 배지 “휴지통 · 다른 기기에서도 삭제됨”. D 는 추가 확인 없이 결정만 기록한다(확인은 계획 승인 화면이 한 번에 받음, §4.6). 다중 선택에 섞여 있으면 토스트 “휴지통 지정 5개(이 중 2개는 다른 기기에서도 삭제됨)”. 그룹 D·그룹 [제안 수락]은 이 항목들을 건너뛴다(core 가 `W_PROTECTED_SKIPPED{reason: icloud_synced}`) → 그룹 행·토스트 “iCloud 동기화 파일 N개는 그룹 휴지통에서 제외했습니다. 다른 기기에서도 지워지므로 항목별로 D 를 눌러야 합니다.” [제외된 항목 보기](그룹 상세를 그 항목들로 필터).
 
 키를 눌렀는데 대상 전부가 그 동작을 허용하지 않으면: 요청을 보내지 않고, 시스템 경고음 없이 포커스 항목 위에 말풍선(2.5초) + VoiceOver 공지. 일부만 허용하면 허용 항목에만 적용하고 토스트 “휴지통 지정 3개 · 1개는 보호 항목이라 건너뜀”.
 
-문구 선택(앱은 `allowed_actions` 로 차단 여부를 판단하고, 이유 문구는 아래 우선순위로 고른다 — core 가 이유 필드를 주면 그것을 우선, §13 R4):
+문구 선택: 차단 여부는 `allowed_actions` 로만 판단하고, 이유는 항목 JSON 의 `blocked_reasons[action]`(02 §5.6, 대상 동작 `trash`·`move`·`archive`·`rename`)으로 아래 표의 문구를 고른다. 코드 → 표의 행: `security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `subject_type` → 같은 이름의 행 / `icloud_synced` → iCloud 행 / `dataless` → 미다운로드 행 / `archive_root_unset` → “보관 폴더가 설정되지 않았습니다” + [보관 폴더 설정…](§4.4) / `not_yet_available` → “이 기능은 아직 제공되지 않습니다(다음 버전)” — 예: M4 에는 파일 동작을 결정할 수는 있지만 `rename` 은 M6 전까지 이 코드. `blocked_reasons` 에 없는 불허(`keep` 불허 등)와 구버전 core 는 아래 조건 열로 추론:
 
 | 조건 | 차단된 키 | 문구 |
 |---|---|---|
@@ -835,7 +848,8 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | `protection = system` | K(keep), D, A, M | “시스템 항목은 확인(K)이나 보류(S)만 할 수 있습니다.” |
 | `protection = user_rule` | D, A, M | “내 보호 규칙으로 보호된 항목입니다. 설정 > 보호 규칙에서 바꿀 수 있습니다.” |
 | `subject_type ∈ {app, package, git_repo, login_item}` | D, A, M | “DayClose 는 앱·패키지·저장소를 삭제하거나 옮기지 않습니다.” |
-| iCloud Drive / dataless(☁︎) | D, A, M | “iCloud Drive 항목은 휴지통·이동·보관을 지원하지 않습니다. 다른 기기에서도 지워질 수 있기 때문입니다.” |
+| iCloud 동기화 경로(`icloud_synced`: iCloud Drive 루트, 또는 “데스크탑 및 문서” 동기화가 켜진 데스크탑·문서) | A, M, R 항상 / D 는 해제 전·`icloud.allow_trash=false` 일 때 | A·M·R: “iCloud 와 동기화되는 파일은 이동·보관·이름 바꾸기를 하지 않습니다. 다른 기기에서도 바뀌기 때문입니다.” D: “iCloud 동기화 파일의 휴지통은 아직 사용할 수 없습니다(실기기 확인 전이거나 설정에서 꺼져 있음).” — 설정에서 꺼진 경우 [설정 열기] |
+| 미다운로드(`dataless`, ☁︎) | D, A, M, R | “iCloud 에만 있는 파일입니다. 내려받지 않고는 정리할 수 없어 유지·보류만 가능합니다.” |
 | 그 외 | 해당 키 | “이 항목에는 ‘{동작}’ 을 사용할 수 없습니다.” |
 | `state = planned` | 모든 결정 키 | “실행 대기 중인 항목입니다. 계획을 취소해야 바꿀 수 있습니다.” |
 
@@ -875,6 +889,8 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | code | 위치 | 문구(요지) | 동작 |
 |---|---|---|---|
 | `E_NOT_INITIALIZED` | 전역 | — | 온보딩으로 |
+| `E_DEVICE_MISMATCH` | 계획 시트·기록(되돌리기)·전역 배너 | `W_DEVICE_MISMATCH` 행과 같은 안내 시트. 파일은 건드리지 않았음을 명시(“아무 파일도 바뀌지 않았습니다”) | [해결 방법] |
+| `E_CANCELLED` | 진행 표시 자리 | “취소했습니다.” (`scan.run`·`ai.classify` 만) | 재조회 |
 | `E_LOCKED` | 배너(자동 재시도 후) | “다른 작업(예약 스캔 등)이 진행 중입니다. 잠시 후 다시 시도하세요.” | [다시 시도] |
 | `E_PROTECTED` | 말풍선 | §5.3 | 항목 재조회 |
 | `E_INVALID_STATE` | 토스트 | “다른 곳에서 이미 처리된 항목입니다.” | 재조회 |
@@ -909,7 +925,8 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 | `W_PROTECTED_SKIPPED` | 그룹 행/토스트: §5.3 마지막 줄 |
 | `W_TOOL_MISSING` | 정보: 도구별 |
 | `W_FIELD_KEY_UNAVAILABLE` | “암호화 키를 읽지 못해 메모 등 일부 정보를 표시할 수 없습니다.” |
-| `W_DEVICE_MISMATCH` (`core.doctor`) | 닫을 수 없는 경고 배너(해결 전까지): “이 데이터는 다른 Mac 에서 복사된 것 같습니다(기기 ID 불일치 또는 등록된 폴더 없음). DayClose 는 Mac 마다 따로 설치합니다.” [설정 > 스캔 위치] [상태 폴더 열기]. 결정: 앱은 자동 복구하지 않는다(어느 쪽이 맞는지 사용자만 앎). 결정 입력은 막지 않되 M5 의 [승인하고 실행] 은 이 경고가 있는 동안 비활성 — 다른 기기 경로로 계획이 실행되는 것을 막기 위함 |
+| `W_DEVICE_MISMATCH` (`core.doctor`·읽기 명령) | 닫을 수 없는 경고 배너(해결 전까지): “이 데이터는 다른 Mac 에서 복사된 것 같습니다. DayClose 는 Mac 마다 따로 설치합니다. 이 Mac 에서는 정리를 실행할 수 없습니다.” [해결 방법] → 안내 시트: “이 Mac 에서 새로 시작하려면 터미널에서 `dayclose init` 을 실행합니다(복사된 데이터는 상태 폴더에 그대로 남습니다).” + [상태 폴더 열기]. 고치는 명령은 없다(02 §8.1 결과 4). 결정 입력은 막지 않고, 계획·승인·실행·되돌리기 버튼은 비활성(core 도 `E_DEVICE_MISMATCH` 로 거부) |
+| `W_ARCHIVE_UNENCRYPTED` | 정보 배너(차단 안 함, C14): “보관 폴더({display_path})가 암호화되지 않은 볼륨에 있습니다. 디스크를 잃어버리면 보관한 파일을 누구나 읽을 수 있습니다.” — 설정 > 보관(폴더 선택 직후), 보관 연산이 있는 계획 시트, `core.doctor` 결과에서 표시. [닫기] 는 그 폴더 경로에 대해 기억 |
 | `W_PARTIAL_SCAN`, `W_TRUNCATED` | 정보 |
 | `W_CONFIG_UNKNOWN_KEY`, `W_HASH_SKIPPED_LARGE` | 표시 안 함(설정 > 고급 진단에만) |
 
@@ -918,7 +935,7 @@ K 는 “이대로 둔다” 하나의 의미로 쓴다: 대상의 `allowed_acti
 ## 8. 이월·보류 표시 규칙 요약
 
 - 이월 항목은 core 가 오늘 그룹에 재배정한다(06 §4.2). 앱은 별도 “이월” 섹션을 만들지 않고 그룹 안에서 “N일째” 배지 + 그룹 행 “이월 N” 배지 + 필터로 보여준다.
-- `stats.carried_over` 는 보조 지표 줄, 클릭 시 모든 그룹에 “이월” 필터를 건 목록(`item.list {"open": true}` 중 `carry_count ≥ 1`).
+- `stats.carried_over` 는 보조 지표 줄, 클릭 시 모든 그룹에 “이월” 필터를 건 목록(`item.list {"carried": true}`).
 - 보류(`deferred_until > review_date`)는 오늘 그룹에 나타나지 않고 “보류 중” 사이드바에만. 보류 만료일에 core 가 다시 이월 대상으로 올린다.
 - `keep_always` 로 조용히 유지된 항목은 화면에 나오지 않고 “조용히 유지 N” 숫자로만(FR-DR-008).
 - 실행 대기(decided, 계획 전)는 날짜와 무관하게 “실행 대기” 에 남는다.
@@ -997,13 +1014,15 @@ UI 테스트(11 문서가 목록 확정): 마우스 없이 그룹 하나 전체 
 | R1 | 10 | `review.summary.data` 에 `estimated_review_minutes`(FR-DR-001 공식, 06 stats_json 키 목록에 없음), `pending_plan{item_count,bytes}`, `last_scan{run_id,finished_at,status,warning_codes}`, 그룹별 `open_count/decided_count/bytes/protected_count/carried_count/uniform_suggestion` |
 | R2 | 10 | `review.summary --review-date` 과거 날짜에 세션이 없을 때 새로 만들지(이월 처리까지) 여부. UI 는 “만들지 않고 `E_NOT_FOUND`” 를 기대 |
 | R3 | 10 | `item.list` 에 보류 필터(`--deferred`)와 이월 필터. 없으면 앱이 `--open` 전체를 받아 클라이언트 필터 |
-| R4 | 10/04 | 항목 JSON 에 불허 이유(`blocked_reasons: {"trash": "icloud_drive", …}`)와 `is_dataless`/`origin_root_kind`. 없으면 §5.3 의 추론 문구 사용, dataless 는 앱이 직접 판정(09 §5.0) |
-| R5 | 10/05 | 발견 사항 `open → acknowledged` 를 일으키는 명령(예: `vault.acknowledge FINDING_ID`)이 02 §5.3 에 없음. 06 §4.6 에는 상태가 있음 |
-| R7 | 10 | 로그인 항목 목록 명령 없음(`inventory_login_items` 는 있음). 앱은 `item.list --category login_item` 으로 대체 |
+| R4 | 10/04 | 항목 JSON 에 불허 이유(`blocked_reasons`)와 `is_dataless`/`origin_root_kind`. dataless 는 앱도 방어적으로 직접 판정(09 §5.0) |
+| R5 | 10/05 | 발견 사항 `open → acknowledged` 수단 |
+| R7 | 10 | 로그인 항목 목록 수단. 앱은 `item.list --category login_item` 사용 |
 | R8 | 08 | `app_button` 승인의 사람 확인 보강(09 §11.3 의 제안) 채택 여부 |
 | R9 | 07/10 | AI 키를 Keychain(`com.dayclose.ai`)에 넣는 core 명령(예 `ai.key.set PROVIDER`, 키는 stdin/요청 본문으로만, 응답·로그·감사에 값 없음)과 `ai.status` 의 `key_present`·`blocked_reason`. 앱이 직접 만들면 Python `keyring` 이 읽을 때 키체인 접근 허용 대화상자가 뜸(09 §11.4). 명령이 생기기 전까지 §4.13.1 의 임시 안내 사용 |
 | R10 | 10 | `decision.set --group` 이 (a) 이미 개별 결정된 항목을 덮어쓰는지, (b) 그 동작을 허용하지 않는 `active_repo`·iCloud 항목을 건너뛰고 `W_PROTECTED_SKIPPED` 를 주는지. UI 는 (a) 덮어쓰지 않음, (b) 건너뜀을 기대 |
 | R11 | 10 | `decision.set` 응답 `data.items` 에 갱신된 항목 JSON 전체, 건너뛴 항목 `skipped[{item_id, reason_code}]` |
-| R12 | 10 | `plan.create/show` 연산에 표시용 `display_name/src_display/dst_display/creates_dirs`, `excluded[]` |
-| R13 | 05/10 | `vault.health` 에 통과한 점검(`checks[]`)과 카드 문구(`title/message/recommendation`) |
-| R14 | 10 | `scan.run` 취소 수단(stdio 에서 진행 중 요청 취소). 없으면 앱은 스캔 취소를 제공하지 않는다 |
+| R12 | 10 | `plan.create/show` 연산에 표시용 `display_name/display_path/dst_display_path/creates_dirs`, `excluded[]`; apply 결과 `actual_dst_display_path`; 계획 `plan_hash_short`·`resumable`·`approval.expires_at` (08 §5.2 이름) |
+| R13 | 05/10 | `vault.health` 에 통과한 점검(`checks[]`)과 카드 문구(`title/message/remediation`) |
+| R14 | 10 | `scan.run` 취소 수단(stdio 에서 진행 중 요청 취소) |
+
+처리 결과(02/06 재조정 반영, 2026-11-24): R1·R2·R3·R4·R7·R10·R11·R12·R14 채택(본문 반영, R14 의 취소 결과는 `E_CANCELLED`). R5 — 별도 명령 없이 자산 항목의 `decision.set --action acknowledge`(02 §5.3 `vault.annotate` 비고, 05 §8.3)(§4.10 반영). R6 — `vault.annotate --backup` 으로 해소. R9 — `ai.key.set`/`ai.key.remove` 가 02 에 추가됨(§4.13.1 반영). R13 — 05 §11 형태(`remediation`). R8 — 08 §6.5 가 Secure Enclave 서명 승인을 채택(M7 승인 강화), 그 전까지 `native_dialog` 저하 모드(§4.6 반영).

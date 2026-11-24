@@ -98,7 +98,7 @@ collector·executor 가 쓰는 **고정 시스템 경로**는 모두 `common/pat
 | `volumes_root` | `/Volumes` | `$SANDBOX/vol` |
 | `tool_dir` | (없음 — 절대경로) | `$SANDBOX/bin` (가짜 도구 우선) |
 
-외부 도구 해석(보안 요구 사항, 결정): 프로덕션에서 `run_tool` 은 시스템 도구를 **절대경로**로만 실행한다(`/usr/bin/osascript`, `/usr/bin/defaults`, `/usr/bin/mdls`; `git`·`brew`·`gitleaks` 는 `init`/`doctor` 가 찾은 절대경로를 설정·DB 에 고정). `PATH` 앞쪽에 가짜 `osascript` 를 둔 에이전트가 `native_dialog` 승인을 위조하는 경로를 막기 위함. 샌드박스 모드에서만 `tool_dir` 의 가짜 도구가 우선한다. 08·02 §6 에 반영 요청(§11). 테스트 `test_run_tool_ignores_path_outside_sandbox`(해석 함수 단위 테스트 — 실제 실행 없음).
+외부 도구 해석(보안 요구 사항, 결정): 프로덕션에서 `run_tool` 은 시스템 도구를 **절대경로**로만 실행한다(`/usr/bin/osascript`, `/usr/bin/defaults`, `/usr/bin/mdls`; `git`·`brew`·`gitleaks` 는 `init`/`doctor` 가 찾은 절대경로를 설정·DB 에 고정). `PATH` 앞쪽에 가짜 `osascript` 를 둔 에이전트가 `native_dialog` 승인을 위조하는 경로를 막기 위함. 샌드박스 모드에서만 `tool_dir` 의 가짜 도구가 우선한다. 02 §6·§10.3-4 에 반영됨. 테스트 `test_fake_osascript_on_path_not_executed`(§4.1).
 
 ### 2.4 정적 검사로 보강
 
@@ -145,8 +145,9 @@ class Manifest:
 | git repo (활성) | `user/dev/PL-Agent/`: 실제 `git init`, 고정 `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` 로 커밋 3개(최근 5일), 미커밋 변경 4개, 120일 전 커밋만 있는 브랜치 1개, 추적되는 `.env`(가짜 비밀), `.gitignore`, `node_modules/left-pad/`(dev cache), 저장소 밖 Downloads 에 `PL-Agent-spec.pdf` | FR-AM-003, FR-SO-003, FR-SO-004, `tracked_in_git`(FR-SV-007), dev_cache 예외 |
 | git repo (비활성) | `user/dev/old-tool/`: 200일 전 커밋, 모든 mtime 200일 전, `node_modules/`, `.build/` | FR-AM-005(비활성 저장소 캐시만 trash 제안) |
 | packages | `Thing.app/Contents/{Info.plist,MacOS/thing}`, `x.bundle/`, `Lib.photoslibrary/` | 패키지 디렉터리 = 1 항목(FR-CORE-003) |
+| iCloud Drive | `user/Library/Mobile Documents/com~apple~CloudDocs/`(`icloud_drive` 루트, `icloud_synced=1`): 내려받은 일반 파일 3, 구형 자리표시자 `.계약서.pdf.icloud`·`.photo.heic.icloud`(실제로 만들 수 있는 작은 plist 파일), **dataless 흉내** 파일 2(내용 있는 파일 + 매니페스트에 `dataless=true` — `st_flags` 주입으로 `SF_DATALESS` 보고, §3.9), dataless 흉내 `.env`·`id_ed25519` 이름 파일 각 1(내용 검사가 일어나면 안 되는 미끼), `Desktop/` 하위 폴더(“데스크탑 및 문서” 동기화 흉내 — 별도 `desktop` 루트로도 등록해 중첩) | FR-CORE-002, FR-CORE-008, 02 §10.6 |
 | 보안 자산 | §3.4 | FR-SV-001~008 |
-| 환자 유사 | `user/약국/`(설정 `protection.patient_paths` 에 등록) 아래 `처방전_2026-11-24_테스트.pdf`; Downloads 에 `조제기록_11월.xlsx`, `환자명단_테스트.csv`; `메모.txt` 에 합성 주민등록번호(§3.5); 스크린샷 1장 이름은 일반이지만 매니페스트상 "OCR 시 환자 판정"(M6) | FR-PM-002, FR-DR-009(리포트 마스킹), 그룹 결정 제외 |
+| 환자 유사 | `user/약국/`(테스트가 `rule add --kind path_prefix --protection patient_data` 로 등록 — 전용 설정 키는 02 §9 에서 삭제됨) 아래 `처방전_2026-11-24_테스트.pdf`; Downloads 에 `조제기록_11월.xlsx`, `환자명단_테스트.csv`; `메모.txt` 에 합성 주민등록번호(§3.5); 스크린샷 1장 이름은 일반이지만 매니페스트상 "OCR 시 환자 판정"(M6) | FR-PM-002, FR-DR-009(리포트 마스킹), 그룹 결정 제외 |
 | symlinks | 루트 안 파일을 가리키는 링크, 샌드박스 밖(`$SANDBOX/outside/`)을 가리키는 링크, 끊어진 링크, 디렉터리 순환 링크(`a → .`), **Desktop 의 `deploy-key` → `user/.ssh/id_ed25519`**, 하드링크 2개(같은 inode) | `entry_kind=symlink` 처리, 링크를 따라가지 않음(§4.3 S2·S9), 하드링크 중복 판정(04) |
 | odd names | §3.6 | 경로 처리·표시·투영 |
 | cross-volume | §3.7 | FR-EX-005, 볼륨 분리 |
@@ -158,11 +159,12 @@ class Manifest:
 | preset | 포함 | 쓰는 곳 |
 |---|---|---|
 | `minimal` | Downloads 에 파일 3 | 대부분의 단위·계약 테스트 |
-| `day_m2` | downloads, desktop, screenshots 5, installers(DMG 2), duplicates 3, 활성 repo + 프로젝트 파일 4, 환자 패턴 파일 1 — "새 파일 42, 수정 18" 이 되도록 2단계(기준 스캔 → 변경 적용 → 스캔)로 구성 | M2 통합, FR-DR-001, `scripts/demo-m2.sh`(12 문서) |
+| `day_m2` | downloads, desktop, documents, iCloud Drive(일반 파일만), screenshots 5, installers(DMG 2), duplicates 3, 활성 repo + 프로젝트 파일 4, 환자 패턴 파일 1 — "새 파일 42, 수정 18" 이 되도록 2단계(기준 스캔 → 변경 적용 → 스캔)로 구성 | M2 통합, FR-DR-001, `scripts/demo-m2.sh`(12 문서) |
 | `vault_m3` | §3.4 전부 + 활성 repo | M3 통합, 누출 스캐너, `scripts/demo-m3.sh` |
 | `apps_m3` | 앱 번들 3(신규·버전 변경·삭제 시나리오), brew 픽스처, LaunchAgents | FR-AM-* |
 | `exec_m5` | `day_m2` + cross-volume + 쓰기 금지 디렉터리 | M5 실행·장애 주입 |
 | `odd_names` | §3.6 | 경로 회귀 |
+| `icloud` | iCloud Drive 행 + downloads 일부 | FR-CORE-008, 루트 중첩 |
 | `perf_100k` | §7 | 성능 |
 
 ### 3.3 `day_m2` 의 수치 고정
@@ -231,12 +233,34 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `brew` | `brew info --installed --json=v2` 에 `$SANDBOX/.tooldata/brew.json` 출력, 다른 인자는 종료 1 | 테스트가 JSON 교체(설치·삭제 시나리오) |
 | `defaults` | `read com.apple.screencapture location` 에 `$SANDBOX/user/Pictures/Screenshots` | 파일로 값 지정, 키 없음 시나리오(종료 1) |
 | `mdls` | `kMDItemLastUsedDate` 를 `.tooldata/mdls.json` 에서 | 미사용 앱(FR-AM-006) |
-| `osascript` | 승인 대화상자 흉내: `.tooldata/osascript.mode` = `approve` \| `deny` \| `timeout`(종료 1 + 시간 초과 문구) \| `hang`(sleep 무한, core 의 120초 타임아웃은 테스트에서 2초로 주입) | FR-EX-002 |
+| `osascript` | **함정(tripwire)**: 샌드박스에서는 승인 대화상자를 띄우지 않으므로(02 §10.3-1 ②) 호출되면 기록 후 종료 1 → `_guard_env` 가 그 테스트를 실패시킨다. 대화상자 동작은 실행기 주입 단위 테스트로 검증(§4.1 `test_native_dialog_runner`) | FR-EX-002 |
 | `gitleaks` | 기본은 **없음**(PATH 에서 제거된 상태 시나리오 = FR-SV-002 의 "없을 때"). `needs_gitleaks` 테스트만 실제 도구 경로를 노출 | |
 
 가짜 도구는 Python 스크립트(`#!/usr/bin/env python3 -I`)이며 받은 argv 를 `.tooldata/calls.jsonl` 에 기록한다 → 테스트가 "셸 미경유·허용 인자만" 을 검증(02 §6 `run_tool`).
 
 ---
+
+### 3.9 iCloud 자리표시자 (FR-CORE-008)
+
+진짜 dataless 파일은 iCloud 계정 없이 만들 수 없고, `SF_DATALESS` 는 사용자가 `chflags` 로 설정할 수 없다. 그래서 두 수단을 쓴다.
+
+| 수단 | 방법 | 검증 범위 |
+|---|---|---|
+| 플래그 주입 | 04 가 정하는 `collect/fs` 의 `lstat` 대체 지점에서 매니페스트의 dataless 경로에 `st_flags |= 0x40000000` 을 돌려준다. 파일 자체는 내용이 있는 보통 파일(미끼) | core 가 그 경로를 **열지 않는지**를 감사 훅이 잡는다 — 열면 내용이 있으므로 해시·패턴 검사가 실제로 일어나 버그가 드러난다 |
+| 구형 자리표시자 | `.<이름>.icloud` 파일을 실제로 생성 | 원래 이름(`계약서.pdf`)으로 표시, dataless 취급, 자리표시자 파일 자체도 열지 않음 |
+| 실기기 | §9.3 수동 | 실제 다운로드가 일어나지 않음 |
+
+테스트(`integration/test_icloud.py`, `safety/test_no_open_on_dataless.py`):
+
+| 테스트 | 기대 |
+|---|---|
+| `test_fr_core_008_dataless_never_opened` | 스캔·vault·review·`item.show`·`report.daily` 전체 실행 동안 감사 훅의 `open` 이벤트 중 dataless/자리표시자 경로 0건. `sha256` NULL, vault 내용 패턴·gitleaks 미실행(미끼 `.env`·`id_ed25519` 가 내용 근거로 탐지되지 않음 — 이름 기반 탐지는 05 가 허용하면 `detect_methods` 에 `content_pattern` 없음), `W_DATALESS_SKIPPED` 집계 |
+| `test_fr_core_008_icloud_allowed_actions` | `icloud_drive` 루트 항목과 다른 루트의 dataless 항목 모두 `allowed_actions == [keep, keep_always, defer]`, `blocked_reasons` 의 파일 동작 4개(`trash`,`move`,`archive`,`rename`)가 `icloud_synced`/`dataless`, `trash/move/archive` 결정 → `E_PROTECTED`, 그룹 결정은 건너뜀(`W_PROTECTED_SKIPPED`) |
+| `test_fr_core_008_legacy_placeholder_display_name` | `.계약서.pdf.icloud` → `display_name="계약서.pdf"`, `is_dataless=true` |
+| `test_icloud_synced_desktop_documents` | “데스크탑 및 문서” 동기화 흉내: `user/Desktop`·`user/Documents` 를 `user/Library/Mobile Documents/com~apple~CloudDocs/{Desktop,Documents}` 로 가는 심볼릭 링크로 만들고 `desktop`·`documents` 루트로 등록 → 두 루트 `icloud_synced=1`(04 §1 의 realpath 판정), 그 항목은 `keep/keep_always/defer` 만, `blocked_reasons=icloud_synced`. 동기화가 꺼진 일반 `Desktop` 디렉터리 루트는 `icloud_synced=0` |
+| `test_fr_core_008_nested_roots_no_duplicates` | iCloud 루트 안 `Desktop/` 을 `desktop` 루트로도 등록 → 같은 (dev, inode) 항목 1개, 바깥 루트 순회는 안쪽 루트 경로를 건너뜀(02 §10.6) |
+| `test_exclude_globs_relative_to_root` | `**/Library/**` 가 iCloud 루트(`~/Library/Mobile Documents/...`) 자체를 제외하지 않고, 루트 안의 `Library/` 하위만 제외(02 §9) |
+| `test_fr_core_008_app_no_thumbnail_for_dataless` (Swift UI) | dataless 항목은 아이콘만, 썸네일 생성 호출 0, Space 는 경고 후에만(03) |
 
 ## 4. 안전 불변식 — 실행 가능한 검사
 
@@ -252,11 +276,14 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_executor_requires_approval` | `plan.apply` 를 draft·cancelled·completed 에서 호출 → `E_APPROVAL_REQUIRED`/`E_INVALID_STATE`, 트리 불변. |
 | `test_apply_rejects_hash_mismatch` | `approvals.plan_hash` 를 DB 에서 직접 바꾼 뒤 apply → `E_APPROVAL_MISMATCH`, 트리 불변. |
 | `test_apply_rejects_tampered_operations` | 승인 후 `plan_operations.dst_path` 또는 행 추가를 DB 에서 직접 수행 → apply 는 연산 행에서 `plan_hash` 를 **다시 계산**해 불일치를 거부해야 함. (08 요구 사항 — 저장된 해시끼리 비교만 하면 이 테스트가 실패한다. §11) |
-| `test_test_approval_requires_both_env` | `method=test` 승인: `DAYCLOSE_SANDBOX` 만/`DAYCLOSE_TEST_APPROVE=1` 만 → 무시되고 `native_dialog` 경로(가짜 osascript `deny`)로 가서 `E_APPROVAL_DENIED`. |
-| `test_agent_channels_cannot_self_approve` | `--channel skill`/`mcp` + TTY 흉내(`script` 대신 `pty.fork`) → 그래도 `native_dialog`(가짜 `deny`) → `E_APPROVAL_DENIED`. `channel=schedule` → `E_APPROVAL_DENIED`. 에이전트 환경 변수(10 §8.5) 설정 + TTY → `native_dialog`. |
-| `test_serve_app_button_requires_trusted_parent` | 테스트 프로세스가 띄운 `serve --stdio` 에 `channel=app` 승인 요청 → `E_APPROVAL_DENIED`(`reason=untrusted_parent`). |
-| `test_mcp_has_no_approval_tools` | MCP `tools/list` 에 `plan_approve`, `plan_undo`, `plan_apply`, `suppression_remove`, `rule_remove` 가 없음(FR-EX-002, FR-AG-003). |
-| `test_dialog_text_from_core_only` | 가짜 osascript 가 받은 스크립트 인자에 호출자가 준 문자열(결정 메모 등)이 없고, plan 요약(연산 수·해시 앞 8자리)이 있음. |
+| `test_test_approval_requires_both_env` | 샌드박스에서 `DAYCLOSE_TEST_APPROVE` 없이 `plan approve` → 즉시 `E_APPROVAL_DENIED`(02 §10.3-1 ②, 테스트 중 실제 대화상자 금지), 가짜 `osascript` 호출 기록 0건. `method=test` 로 승인한 뒤 apply 시점에 `DAYCLOSE_TEST_APPROVE` 를 지우면 `E_APPROVAL_REQUIRED`(08 G4). |
+| `unit/test_approval_method_selection.py` | 수단 선택 순수 함수(`plan/approval.select_method(env, tty_openable, channel, signature_ok, gui)`)의 표 전체: 에이전트 표식(`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` 등 상수 목록 각각) + TTY 가능 → `native_dialog`(TTY 수단 금지); 표식 없음 + TTY → `cli_tty`; 채널 `app` + 서명 검증 성공 → `app_button`, 서명 없음/실패 → 다음 순서(`native_dialog`); 채널 `mcp`·`schedule` → 거부; GUI 없음 → `E_APPROVAL_DENIED{reason:"no_gui"}`. 실제 대화상자·TTY 는 열지 않는다. |
+| `unit/test_native_dialog_runner.py` | 대화상자 함수에 가짜 실행기(`run_tool` 대체 callable)를 주입: 반환 `approve`/`deny`/시간 초과/무응답 → 각각 승인/`E_APPROVAL_DENIED`; 요약 텍스트가 `osascript` 의 `--` 뒤 argv 로만 전달되고 스크립트 본문에 없으며, 호출자가 준 문자열(결정 메모 등)이 없고 연산 수·`plan_hash_short` 가 있음(F31). |
+| `test_app_signature_verification` | 테스트 키쌍(`cryptography` EC P-256, 실행 시 생성)으로 `core.app_key` 등록(샌드박스 test 확인) → 올바른 서명 `"dayclose.approve.v1\n"+device_id+"\n"+plan_id+"\n"+plan_hash` 은 검증 성공, 다른 `plan_hash`·다른 `device_id`·변조 서명은 실패 → 선택 함수가 `app_button` 을 고르지 않음. |
+| `test_fake_osascript_on_path_not_executed` | `PATH` 맨 앞에 `$SANDBOX/evil/`(가짜 `osascript`·`defaults` — 실행되면 표식 파일을 씀)를 두고 `run_tool('defaults', …)` 와 승인 경로를 실행 → 표식 파일 없음. 실행된 경로는 `$SANDBOX/bin/…` 또는 `system_path` 의 절대경로뿐(호출 기록으로 확인). 단위: 샌드박스가 아닐 때 `system_path('osascript') == '/usr/bin/osascript'`(실행 없음). |
+| `test_apply_rejects_unaudited_approval` | `approvals` 행을 DB 에 직접 넣고(감사 행 없음) apply → `E_APPROVAL_REQUIRED{reason:"approval_not_audited"}`, 트리 불변(08 G5). |
+| `test_apply_rejects_expired_approval` | `DAYCLOSE_TEST_NOW` 로 승인 후 24시간+1초 → apply 와 재개 모두 `E_APPROVAL_REQUIRED{reason:"approval_expired"}`(08 G6). |
+| `test_mcp_has_no_approval_tools` | MCP `tools/list` 의 이름 집합 ∩ 02 §10.3-3 비노출 목록(`plan_approve`, `plan_apply`, `plan_undo`, `plan_recover`, `core_app_key`, `suppression_remove`, `rule_remove`, `config_set`, `vault_annotate`, `policy_accept`, `policy_reject`, `ai_classify`, `ai_key_set`, `ai_key_remove`) = ∅, 그리고 노출 목록 = 02 §5.3 전체 − 그 목록 − 전송 계층(FR-EX-002, FR-AG-003). |
 
 ### 4.2 S2 — 보호 등급 항목은 파괴적 연산에 들어가지 않는다
 
@@ -269,6 +296,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_patient_never_trashed` | 환자 항목 `trash` 불가, `move`/`archive` 는 항목 단위만, 그룹 결정에서 제외(`W_PROTECTED_SKIPPED`). |
 | `test_protection_raised_between_plan_and_apply` | 승인 후 `rule add --protection patient_data` 로 대상 보호 상향 → apply 시 해당 op `skipped`(E_PROTECTED). |
 | `test_symlink_to_secret_not_followed` | Desktop 의 `deploy-key`(→ `.ssh/id_ed25519`) 링크 항목: 어떤 결정·연산도 링크 대상 파일의 inode·내용·위치를 바꾸지 않음. 링크 자체를 trash 하면 링크만 이동(대상 불변). |
+| `test_seed_recovery_rows_have_no_derivatives` | 마이그레이션 적용 DB 에 `kind ∈ {crypto_seed_suspected, recovery_codes}` 이면서 `fingerprint_sha256`/`key_fingerprint`/`cert_subject_enc` 중 하나라도 NULL 이 아닌 행을 직접 INSERT/UPDATE → `sqlite3.IntegrityError`(06 §5.3 CHECK). 정상 스캔 결과 해당 행의 세 컬럼 NULL(FR-SV-008) |
+| `test_suppression_never_applies_to_protected` | `suppression add --match path_glob --value '**'`·`--match sha256 --value <보안 자산 파일의 해시>` 등으로 보안 자산·환자 항목과 일치하는 규칙 생성 → 응답 `protected_not_applied ≥ 1`, 그 항목은 `suppressed` 가 아니라 계속 `proposed`, 다음 스캔에서도 질문됨. `keep_always` 가 만든 suppression 도 보호 상향 후에는 적용되지 않음. 64MB 초과·dataless 파일은 `sha256` 규칙과 일치하지 않음 |
 | `prop_no_protected_in_destructive_ops`(Hypothesis) | §5.1 상태 기계에서 임의 보호 규칙 추가·제거·결정·계획·실행을 섞어도, `done` 상태의 파괴적 연산 대상 항목의 **실행 시점** protection 이 `security_asset` 이었던 적이 없고, `patient_data` 에 `trash` 가 없다. |
 
 ### 4.3 S3 — 실행된 모든 연산은 되돌릴 수 있거나, 명시적으로 불가 표시된다
@@ -324,7 +353,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | ID | 불변식 | 테스트 |
 |---|---|---|
 | S5 | 실제 사용자 경로 미접촉 | §2 전체 (`test_sandbox_guard.py`, `test_tests_do_not_reference_real_paths.py`, `test_conftest_guard_present.py`) |
-| S6 | 외부 네트워크 0 (AI·NAS 비활성) | `_no_network` 가 모든 테스트에 적용 + `test_nfr_priv_002_no_network_when_ai_disabled`(M6: `ai.enabled=false` 로 전체 플로우) |
+| S6 | 외부 네트워크 0 (AI 비활성 또는 외부 공급자 미허용) | `_no_network` 가 모든 테스트에 적용 + `test_nfr_priv_002_no_network_when_ai_disabled`(M6: `ai.enabled=false` 로 전체 플로우) |
 | S7 | 모듈 import 방향(02 §6) | `test_import_boundaries.py`: AST 로 `dayclose.<a>` → `dayclose.<b>` 엣지를 모아 02 §6 의 허용 그래프 밖 엣지·`ai`→`executor`/`common.proc` 엣지가 있으면 실패 |
 
 ---
@@ -415,10 +444,15 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | F28 | DB 손상 | DB 파일 중간 4KB 를 0 으로 | 일반 명령 `E_DB_CORRUPT`(종료 10), `doctor` 는 `healthy=false` | |
 | F29 | 마이그레이션 중 크래시 | `migrate.mid` | 다음 실행에서 트랜잭션 롤백 상태 확인, 백업 파일 존재, 재시도 성공 | 06 §7 |
 | F30 | 적용된 마이그레이션 파일 체크섬 변경 / DB 버전이 코드보다 높음 | | `E_DB_MIGRATION`, 읽기·쓰기 거부, `details.backup_path` | 06 §7 |
-| F31 | 승인 대화상자 거부 / 시간 초과 / 응답 없음 | 가짜 osascript `deny`/`timeout`/`hang` | `E_APPROVAL_DENIED`, plan `draft` 유지 | FR-EX-002 |
+| F31 | 승인 대화상자 거부 / 시간 초과 / 응답 없음 | 대화상자 함수에 실행기 주입(`unit/test_native_dialog_runner.py`) | `E_APPROVAL_DENIED`, plan `draft` 유지, 잠금을 잡지 않은 채 기다림(02 §10.3-6) | FR-EX-002 |
 | F32 | serve 프로세스 크래시 | serve 에 SIGKILL | `CoreClient` 재기동(Swift 테스트), 실행 중이던 plan 은 recover 대상으로 표시 | 10 §3.7 |
-| F33 | 스캔 중 SIGINT | | `scan_runs.status=interrupted`, 커밋된 루트 결과 유지, 다음 스캔이 정상 진행 | 10 §2.4 |
+| F33 | 스캔 중 SIGINT / serve 취소 | CLI 에 SIGINT, serve 에 `{"control":"cancel"}` | `E_CANCELLED`(종료 130), `scan_runs.status=interrupted`, 커밋된 루트 결과 유지, 다음 스캔이 정상 진행 | 02 §5.5 |
+| F39 | apply 중 SIGINT | 진행 이벤트 1개 후 SIGINT(CLI) / serve 프로세스에 SIGINT | `E_PARTIAL` + `data.resumable=true`(`E_CANCELLED` 아님), 이름변경 중 op 는 `done`, 복사 중 op 는 임시 파일 제거 후 `pending`, 남은 op `pending`, 계획 `executing`, serve 세션 유지. 다시 `plan apply` → 남은 op 만 실행. 또는 `plan cancel` → 남은 op `skipped`, 계획 `partial`/`cancelled` | 08 §7.6.2, §7.7, §7.10 |
+| F40 | undo 중 크래시 | 체크포인트 `undo.undoing_committed`(파일 호출 전), `undo.fs_done`(파일 호출 후) | recover: 앞의 경우 원위치 없음·목적지 있음 → `undoable` 로 되돌림, 뒤의 경우 원위치 있음 → `undone`. 유실 0 | 06 §4.5, 08 §10 |
 | F34 | 필드 암호화 키 없음 | 테스트 키 파일 삭제 | 메모 필드 `null` + `W_FIELD_KEY_UNAVAILABLE`, 나머지 동작 | 06 §6 |
+| F36 | 다른 Mac 의 DB 복사 | (a) 샌드박스 A 의 `dayclose.db` 만 B 로 복사(다른 `config.device_id`) (b) DB 와 `config.toml` 을 함께 복사(device_id 일치) 후 `app_meta.host_uuid_sha256` 을 다른 값으로 바꿔 다른 Mac 을 흉내 | 둘 다: `doctor` 가 `ok=true`, `healthy=false`, `W_DEVICE_MISMATCH`; `plan.create`/`plan.approve`/`plan.apply`(`--dry-run` 포함)/`plan.undo`/`plan.recover` 가 파일 시스템을 건드리기 전에 `E_DEVICE_MISMATCH`(종료 5) + `W_DEVICE_MISMATCH`; `plan.show`/`plan.list`/`audit.list` 는 경고만; 트리·DB 불변. 원 host UUID 는 DB·로그 어디에도 없음(누출 스캐너 needle) | 02 §8.1, §10.3-4a, 08 §7.11 |
+| F37 | 보관 폴더 미설정·소실 | `archive.root=""` 에서 archive 결정 → `E_ARCHIVE_TARGET_MISSING`; 설정 후 계획 → 볼륨 분리 → `plan.create` 시 `excluded`(E_ARCHIVE_TARGET_MISSING), 승인 후 분리 → apply `E_VOLUME_UNAVAILABLE` op failed, 원본 보존 | FR-AB-001 |
+| F38 | 보관 폴더 볼륨 행 | `archive.root` 가 응답 없는 볼륨(probe 무한 대기) | `config set`·`plan.create`·`apply`·`doctor` 모두 `volume_probe_timeout_s`+2초 안에 `E_VOLUME_TIMEOUT`/`access: timeout` | 02 §10.5 |
 | F35 | 시계 역행·시간대 변경 | `clock` 주입 | 리뷰 날짜 계산이 단조성을 요구하지 않고 이월이 중복 증가하지 않음(FR-DR-006 멱등) | FR-DR-002 |
 
 ---
@@ -457,7 +491,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `test_serve_transcripts` | `contracts/fixtures/serve/*.jsonl` 재생: ready 첫 줄, id 매칭, 순서 뒤바뀐 응답, 진행 이벤트가 응답 전에만, 제어 메시지, 1MiB 초과 줄, 잘못된 JSON, 중복 id, EOF 드레인 |
 | `test_mcp_tools_snapshot` (M8) | `tools/list` 결과(이름·설명·`inputSchema`·`annotations`)가 스냅숏 픽스처와 동일, 비노출 목록 부재 |
 | `test_mcp_protocol_basics` (M8) | modern(2026-07-28): `server/discover`, 요청별 `_meta` 버전 검사·미지원 시 `-32022`, 모든 결과 `resultType`, `tools/list` 의 `ttlMs`/`cacheScope`·결정론적 순서. legacy(2025-11-25): `initialize`→`initialized`→`ping`. 공통: 알 수 없는 도구 `-32602` vs 인자 검증 실패 `isError: true`, `structuredContent` 가 `outputSchema` 통과(오류 포함), 취소된 요청에 이후 메시지 0, `progress` 단조 증가, stdout 에 JSON-RPC 외 출력 0, stdin EOF 시 종료 |
-| `test_schema_command_lists_all` | `dayclose schema` 목록 == 02 §5.3 명령 ID 집합(+10 의 `archive.*`) |
+| `test_schema_command_lists_all` | `dayclose schema` 목록 == 02 §5.3 명령 ID 집합(`archive.*` 없음) |
 
 ### 8.2 Swift (`app/DayCloseKit/Tests/`)
 
@@ -490,6 +524,10 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 자동화할 수 없는 항목. **소유자가 직접** 실행하며, 에이전트는 체크리스트를 제시만 한다(AGENTS.md §3.7: TCC 변경·LaunchAgent 등록은 사용자 확인 없이 하지 않음). 실제 데이터 대신 소유자가 만든 테스트 폴더(`~/DayCloseTest/`)와 테스트용 USB/외장 폴더를 쓴다. 결과는 마일스톤 종료 PR 에 체크 표시로 기록.
 
+### 9.0 두 기기 원칙 (02 §8.1)
+
+아래 체크리스트는 **MacBook 과 Mac mini 에서 각각** 실행하고 기기별로 따로 기록한다(설치가 독립이므로 한 기기의 결과가 다른 기기를 보증하지 않는다). Mac mini 는 `/Volumes/External` 이 상시 연결된 상태에서 외장 관련 항목을 수행한다. 기본 루트는 홈 아래만이므로 외장 루트·보관 폴더는 각 기기에서 사용자가 직접 `root add`·`config set archive.root` 한 뒤 점검한다.
+
 ### 9.1 TCC / 전체 디스크 접근 (M1·M7, 09 문서 절차)
 
 - [ ] FDA 없이 셸에서 `dayclose doctor` — `~/Desktop`·`~/Documents`·`~/Downloads` 각각 `ok` 또는 `tcc_denied` 가 실제 상태와 일치(FR-CORE-005).
@@ -498,6 +536,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 - [ ] DayClose.app 에 FDA 부여 후 예약 실행에서 같은 루트가 `ok`(M7).
 - [ ] FDA 미부여 안내가 알림·앱에 나오고 설정 경로 문구가 실제 macOS 26 메뉴와 일치(FR-MI-004).
 - [ ] Python 인터프리터에 FDA 를 주지 않았음을 시스템 설정에서 확인(02 §10.5).
+- [ ] (M7) 앱을 다시 빌드한 뒤 FDA 가 유지되는지 확인: 재빌드 → 예약 실행 → `doctor` 의 `full_disk_access`·외장 루트 `access`. 풀렸으면 09 의 대응 절차 기록.
+- [ ] Mac mini: FDA 없는 launchd 실행에서 `/Volumes/External` 루트·`archive.root` 가 있어도 멈추지 않고 경고로 끝남(실제 TCC 행 재현).
 
 ### 9.2 알림·메뉴바·스케줄 (M7)
 
@@ -512,7 +552,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 - [ ] CONTEXT 턴1 표의 유형별 미리보기: 이미지, PDF, docx/xlsx/pptx, 동영상, ZIP(내부 목록), 소스코드, Markdown, DMG/PKG(메타데이터 패널), 앱(아이콘·버전·용량·마지막 사용일), 폴더(FR-VR-003).
 - [ ] 테스트 보안 자산(샌드박스 생성 `.p12`)은 Space 를 눌러도 내용 미리보기 없음, 이름 마스킹(FR-VR-006).
 - [ ] 미리보기 후 `~/Library/Caches/DayClose` 에 해당 항목 파생물 없음(Finder 로 확인 + `find` 크기 기록).
-- [ ] iCloud Drive 의 dataless 파일(소유자가 고른 테스트 파일)을 스캔·미리보기 목록에 두어도 다운로드가 시작되지 않음(`ls -lO` 의 `dataless` 플래그 유지, FR-CORE-006).
+- [ ] iCloud Drive 의 dataless 파일(소유자가 고른 테스트 파일, 저장 공간 최적화로 내려간 상태)을 스캔·`vault health`·앱 목록·미리보기 목록에 두어도 다운로드가 시작되지 않음: 전후 `ls -lO` 의 `dataless` 플래그 유지, Finder 의 구름 아이콘 유지(FR-CORE-008). 같은 파일이 두 기기 리뷰에 각각 나오고 `keep/keep_always/defer` 만 가능.
 
 ### 9.4 승인·실행 (M5)
 
@@ -520,15 +560,39 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 - [ ] 터미널(TTY)에서 해시 8자리 입력 승인, 오입력 3회 거부.
 - [ ] 실제 `~/.Trash` 로 이동한 테스트 파일이 Finder 휴지통에 보이고 `plan undo` 로 원위치. (Finder 의 "되돌려 놓기"는 지원 대상 아님 — 08 결정 확인.)
 - [ ] 외장 볼륨(테스트 USB)으로 이동 도중 케이블 분리 → 원본 보존, 재연결 후 `plan recover` 정상(FR-EX-005).
+- [ ] `archive.root` 를 외장(Mac mini: `/Volumes/External/DayCloseArchive` 아래 테스트 폴더)으로 두고 테스트 파일 보관 → `<root>/<YYYY>/<MM>/` 배치, `plan undo` 로 원위치(FR-AB-001).
 - [ ] 08 의 "소유자 첫 실사용 전 체크리스트" 서명(12 M5).
 
 ### 9.5 Skill·MCP (M8)
+
+- [ ] Skill 설치 위치: Claude Code `~/.claude/skills/dayclose`, Codex `~/.agents/skills/dayclose` 링크가 각 도구의 Skill 목록에 보임(10 §8.1).
 
 - [ ] Claude Code·Codex 각각에서 Skill 이 "오늘 정리하자" 류 요청에 트리거되고, 승인 단계에서 반드시 사람에게 넘김(10 §8).
 - [ ] Claude Code 의 MCP 도구 목록에 승인·undo·apply 도구가 없음.
 - [ ] 에이전트 화면(대화)에 환자 유사 테스트 파일 이름·보안 자산 경로가 나오지 않음(10 §1.5).
 
 ---
+
+### 9.6 기기별 기록 양식
+
+| 항목 | MacBook | Mac mini |
+|---|---|---|
+| M3 읽기 전용 실사용(`scan run` + `review summary` + `vault health`, 소유자 직접) | | |
+| M7 셸 vs launchd 비교 | | |
+| M7 재빌드 후 FDA 유지 | | |
+| `/Volumes/External` 행 재현(FDA 없음) | 해당 시 | 필수 |
+| iCloud 자리표시자 비다운로드 | | |
+
+### 9.7 09 실기기 검증 항목(V1~V16)의 마일스톤 배정
+
+09 §12 의 V 항목은 12 로드맵과 같은 마일스톤에 배정하고, 각 마일스톤 종료 PR 에 §9.6 기록표와 함께 기기별 결과를 남긴다. 절차·대안은 09 가 정한다.
+
+| 마일스톤 | V 항목 | 이 문서의 관련 절 |
+|---|---|---|
+| M4 | V1(FDA 프로브 정확도), V2(설정 패널 URL), V3(자식 core 가 앱의 FDA 를 따름), V7(FDA 와 iCloud), V9(`metadata_only`·`ephemeral` 열람 후 파일 미개방·QL 캐시), V16(복사된 DB 배너·승인 버튼 비활성) | §9.1, §9.3, F36 |
+| M5 | V8(`~/.Trash` 와 Finder 되돌려 놓기), V11(Secure Enclave 서명 승인 가능 여부) | §9.4, §4.1 `test_app_signature_verification` |
+| M6 | V12(Vision 한국어 OCR) | M6 표 |
+| M7 | V4(헬퍼가 앱 FDA 를 따름), V5(재빌드 후 FDA 유지), V6(헬퍼 번들·알림 도메인), V10(활성화 정책 전환), V13(잠자기 보충 실행), V14(FDA 없는 예약 실행 제한 시간), V15(재빌드 후 SMAppService 상태·다른 서명의 실패 모습) | §9.1, §9.2 |
 
 ## 10. 마일스톤별 인수 체크리스트
 
@@ -539,14 +603,17 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | ID | 테스트 |
 |---|---|
 | FR-CORE-001 | `test_fr_core_001_init_idempotent`, `test_fr_core_001_home_0700_db_0600` |
-| FR-CORE-002 | `test_fr_core_002_default_roots_in_fake_home`, `test_fr_core_002_missing_root_warns`, `test_fr_core_002_screenshot_location_differs`(가짜 `defaults`), `test_fr_core_002_root_add_remove_list` |
+| FR-CORE-002 | `test_fr_core_002_default_roots_in_fake_home`(downloads·desktop·documents·icloud_drive·projects, iCloud 폴더가 없으면 건너뛰고 경고),  `test_fr_core_002_missing_root_warns`, `test_fr_core_002_screenshot_location_differs`(가짜 `defaults`), `test_fr_core_002_root_add_remove_list` |
 | FR-CORE-003 | `test_fr_core_003_create_modify_delete_rename_one_event_each`, `test_fr_core_003_rescan_no_events`, `test_fr_core_003_package_dir_single_entry`, `test_fr_core_003_excludes_ds_store_node_modules_git`, `prop_fs_diff`(§5.2) |
 | FR-CORE-004 | `test_fr_core_004_every_command_envelope`(M1 명령) |
 | FR-CORE-005 | `test_fr_core_005_doctor_root_access`(tcc_denied 는 EPERM 주입), `test_fr_core_005_tcc_vs_permission_distinct` |
 | FR-CORE-006 | `test_fr_core_006_probe_deadline`, `test_fr_core_006_dataless_not_hashed`(`st_flags` 주입) |
 | FR-CORE-007 | `test_fr_core_007_concurrent_scan_one_locked` |
+| FR-CORE-008 | §3.9 의 `test_fr_core_008_*` 전부, `test_exclude_globs_relative_to_root` |
+| 02 §8.1 | `test_doctor_device_mismatch_copied_db`(F36 a·b — host UUID 포함), `test_default_roots_never_under_volumes` |
+| 02 §10.4 | `test_sandbox_home_outside_sandbox_rejected`(샌드박스인데 `DAYCLOSE_HOME` 이 밖이면 시작 거부 `E_SANDBOX_VIOLATION`, 아무 파일도 안 만듦), `test_sandbox_guard.py` |
 
-종료 기준 검증: pytest·ruff·mypy 녹색(CI 명령 §12) / 재스캔 이벤트 0(`test_fr_core_003_rescan_no_events`) / 1만 웜 스캔 ≤ 2초(`test_m1_warm_scan_10k`, 측정값 기록) / 실제 `~` 접근 0(§2 전체) / 계약 픽스처 4종 존재(`test_fixtures_regenerate_identically`).
+종료 기준 검증: pytest·ruff·mypy 녹색(CI 명령 §12) / FR-CORE-008(§3.9) / 루트 기준 상대 제외·겹치는 루트 처리(`test_exclude_globs_relative_to_root`, `test_fr_core_008_nested_roots_no_duplicates`) / 재스캔 이벤트 0(`test_fr_core_003_rescan_no_events`) / 1만 웜 스캔 ≤ 2초(`test_m1_warm_scan_10k`, 측정값 기록) / 실제 `~` 접근 0(§2 전체) / 계약 픽스처 4종 존재(`test_fixtures_regenerate_identically`).
 
 ### M2 — 리뷰 모델 + 보호 정책 + 프로젝트 문맥
 
@@ -568,7 +635,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-AM-003 | `test_fr_am_003_dirty_repo_item_dirty_count` |
 | FR-PM-001 | `test_fr_pm_001_allowed_actions_matrix` |
 | FR-PM-002 | `test_fr_pm_002_patient_pattern_sensitivity_no_trash`, `test_fr_pm_002_rrn_in_text` |
-| FR-PM-003 | `test_fr_pm_003_rule_add_path_prefix_protects`, `test_fr_pm_003_builtin_rule_not_removable` |
+| FR-PM-003 | `test_fr_pm_003_rule_add_path_prefix_protects`, `test_fr_pm_003_builtin_rule_not_removable`, `test_rule_ids_use_rul_prefix`(`rule.*` 는 `rul_`, `prl_` 를 주면 `E_USAGE`) |
+| 02 §5.3 suppression.add | `test_suppression_add_path_glob_suppresses_open_items`, `test_suppression_never_applies_to_protected` |
 
 종료 기준 검증: 06 §4.1 전이 전부(`test_item_transitions_allowed[*]` 파라미터화 + `prop_item_transitions` 의 비허용 → `E_INVALID_STATE`) / 결정 전후 트리 해시 불변(S1) / 환자 패턴 파일이 리포트·로그에 실경로로 없음(`test_leak_report_masking`) / `scripts/demo-m2.sh` 가 샌드박스에서 종료 0.
 
@@ -581,7 +649,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-SV-003 | `test_fr_sv_003_trash_move_archive_e_protected`, `test_fr_sv_003_group_auto_excluded` |
 | FR-SV-004 | `test_leak_after_vault_scan`, `test_fr_sv_004_masked_names` |
 | FR-SV-005 | `test_fr_sv_005_23_days_expiring_soon_high`, `test_fr_sv_005_password_p12_expiry_unknown`, `test_fr_sv_005_annotate_expires` |
-| FR-SV-006 | `test_fr_sv_006_finding[<vault_finding_type>]`(9종) |
+| FR-SV-006 | `test_fr_sv_006_finding[<vault_finding_type>]`(9종), `test_vault_annotate_backup_resolves_no_backup`(`--backup verified` 만이 `backup_status` 를 바꾸고 `no_backup` 이 `resolved`), `test_backup_status_unchanged_by_scan` |
 | FR-SV-007 | `test_fr_sv_007_tracked_key_revoke_advice_acknowledge_only` |
 | FR-SV-008 | `test_fr_sv_008_seed_no_fingerprint_no_path_in_log`, `test_leak_seed_no_derivatives` |
 | FR-AM-001 | `test_fr_am_001_app_added_version_changed_removed` |
@@ -590,7 +658,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-AM-005 | `test_fr_am_005_inactive_repo_cache_trash_suggested_only` |
 | FR-AM-006 | `test_fr_am_006_unused_90_days_monthly_report` |
 
-종료 기준 검증: 누출 스캐너가 `core.log`·DB 원시 바이트+`.dump`·모든 stdout 에서 0건 / gitleaks 없는 PATH 에서 녹색(`test_fr_sv_002_without_gitleaks_warns_only` + 전체 스위트를 `PATH` 에서 gitleaks 제거한 상태로 1회) / `scripts/demo-m3.sh` 종료 0 / 소유자 실 `~` 수동 실행(§9 아님 — 12 M3 의 읽기 전용 실행, 소유자 직접).
+종료 기준 검증: §9.6 의 M3 실사용을 두 기기 각각 / 누출 스캐너가 `core.log`·DB 원시 바이트+`.dump`·모든 stdout 에서 0건 / gitleaks 없는 PATH 에서 녹색(`test_fr_sv_002_without_gitleaks_warns_only` + 전체 스위트를 `PATH` 에서 gitleaks 제거한 상태로 1회) / `scripts/demo-m3.sh` 종료 0 / 소유자 실 `~` 수동 실행(§9 아님 — 12 M3 의 읽기 전용 실행, 소유자 직접).
 
 ### M4 — SwiftUI 검토 앱 (첫 MVP)
 
@@ -601,7 +669,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | NFR-A11Y-001(키보드) | `testKeyboardOnlyGroupReview`, `testAccessibilityAudit` |
 | serve 프로토콜 | `test_serve_transcripts`, `CoreClientTests` |
 
-종료 기준 검증: `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
+종료 기준 검증: 09 V1·V2·V3·V7·V9·V16(§9.7) 기기별 기록 / `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
 
 ### M5 — 안전 실행
 
@@ -612,12 +680,12 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-EX-003 | F12~F16 |
 | FR-EX-004 | `test_fr_ex_004_trash_is_rename_to_volume_trash`, `test_fr_ex_004_undo_restores`, `test_no_mutation_outside_executor.py` |
 | FR-EX-005 | `test_fr_ex_005_cross_volume_hash_verified`(`hdiutil`), F03~F05·F07·F19·F20 |
-| FR-EX-006 | F01~F06, `test_fr_ex_006_undo_roundtrip`, `prop_executor`(§5.1) |
+| FR-EX-006 | F01~F06, F39, F40, `test_fr_ex_006_undo_roundtrip`, `prop_executor`(§5.1) |
 | FR-EX-007 | `test_fr_ex_007_audit_list_channel_no_paths` |
-| FR-AB-001 | `test_fr_ab_001_archive_target_add_local`, `test_fr_ab_001_archive_decision_dest_name`, `test_fr_ab_001_archive_verify_hash_readback` |
+| FR-AB-001 | `test_fr_ab_001_archive_root_layout_year_month`(`<root>/<YYYY>/<MM>/<이름>`, 충돌 시 08 규칙), `test_fr_ab_001_archive_decision_rejects_dest`, `test_fr_ab_001_archive_root_unset_missing`, `test_fr_ab_001_cross_volume_archive_hash_verified`(`hdiutil`), `test_fr_ab_001_archive_undo_restores`, F37·F38 |
 | FR-VR-007 | `testApproveBindsDisplayedHash`, `testApplyProgressAndUndo` |
 
-종료 기준 검증: 장애 주입 스위트 F01~F35 녹색, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
+종료 기준 검증: 09 V8·V11(§9.7) / 장애 주입 스위트 F01~F40 녹색, §4.1 승인 무결성 테스트 전부, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
 
 ### M6 — AI + 학습
 
@@ -625,11 +693,11 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 |---|---|
 | FR-SO-005 | `test_fr_so_005_ai_disabled_zero_network`, `test_fr_so_005_patient_secret_not_in_payload`(가짜 로컬 공급자) |
 | FR-SO-006 | `test_fr_so_006_ocr_rrn_sets_patient`(가짜 `dayclose-native` 출력), `test_fr_so_006_ocr_text_encrypted` |
-| FR-PM-004 | `test_fr_pm_004_five_trash_decisions_suggest_rule`(임계값은 07), `test_fr_pm_004_active_rule_fills_suggestion_still_needs_approval` |
+| FR-PM-004 | `test_policy_ids_use_prl_prefix`(`policy.*` 응답·인자는 `prl_`, `rul_` 를 주면 `E_USAGE`), `test_policy_reject_active_to_disabled`, `test_fr_pm_004_five_trash_decisions_suggest_rule`(임계값은 07), `test_fr_pm_004_active_rule_fills_suggestion_still_needs_approval` |
 | FR-PM-005 | `test_fr_pm_005_gate_strips_none_policy_secret_patient`, `test_leak_ai_payload`, `test_fr_pm_005_ai_requests_metadata_only` |
 | NFR-PRIV-002 | `test_nfr_priv_002_no_network_when_ai_disabled` |
 
-종료 기준 검증: 위 + 게이트 회귀(`prop_agent_view` 와 같은 생성기로 게이트 입력 생성) / ollama 실제 연동은 `needs_ollama` 사유 skip 가능(설치된 경우만).
+종료 기준 검증: 09 V12(§9.7) / 위 + 게이트 회귀(`prop_agent_view` 와 같은 생성기로 게이트 입력 생성) / ollama 실제 연동은 `needs_ollama` 사유 skip 가능(설치된 경우만).
 
 ### M7 — 메뉴바·자동 실행·알림·TCC
 
@@ -638,37 +706,33 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-MI-001~004 | §9.1·§9.2 수동 + `test_fr_mi_004_schedule_channel_never_blocks`(F21 를 `--channel schedule` 로), `test_schedule_cannot_approve` |
 | NFR-REL-001 | F21 + §9.1 실제 launchd 행 재현 |
 
-종료 기준 검증: 09 의 "셸 vs launchd" 비교 결과를 PR 에 기록.
+종료 기준 검증: 09 V4·V5·V6·V10·V13·V14·V15(§9.7) / 09 의 "셸 vs launchd" 비교 결과와 "재빌드 → FDA 유지" 결과를 **MacBook·Mac mini 각각** PR 에 기록(§9.6).
 
-### M8 — Skill·MCP·NAS·Vault 백업
+### M8 — Skill·MCP
 
 | ID | 테스트 |
 |---|---|
-| FR-AG-002 | `test_skill_md_frontmatter_valid`(Claude Code·Codex 양쪽 규칙, 10 §8.1), `test_skill_commands_exist`(SKILL.md 의 모든 `dayclose …` 예시가 `dayclose schema` 에 있는 명령·플래그), `test_skill_never_instructs_approval_by_agent`(본문 정적 검사: `--hash` 를 에이전트가 입력하는 예시 없음), §9.5 수동 |
+| FR-AG-002 | `test_skill_md_frontmatter_valid`(frontmatter 키가 Claude Code·Codex 교집합 `name, description, allowed-tools` 뿐, 이름 ≤ 64자, 설명 ≤ 1024자, 10 §8.1), `test_skill_allowed_tools_exclude_mutations`(`allowed-tools` 에 `plan approve/apply/undo`, `rule remove`, `config set` 패턴 없음), `test_skill_commands_exist`(SKILL.md 의 모든 `dayclose …` 예시가 `dayclose schema` 에 있는 명령·플래그), `test_skill_never_instructs_approval_by_agent`, §9.5 수동 |
 | FR-AG-003 | `test_mcp_tools_snapshot`, `test_mcp_protocol_basics`, `test_mcp_has_no_approval_tools`, `test_leak_agent_channels`(mcp) |
-| FR-AB-002 | `test_fr_ab_002_smb_target_year_month_layout`(샌드박스 디스크 이미지를 smb 대상으로 흉내 — 실제 SMB 는 §9 수동) |
-| FR-AB-003 | `test_fr_ab_003_patient_requires_age_target`, `test_fr_ab_003_decrypt_roundtrip`(`age` 설치 시) |
-| FR-SV-009 | 05 확정 후 추가(명령 미정 — 10 §2.14) |
 
 ---
 
 ## 11. 이 계획이 다른 문서에 요구하는 것
 
-| 대상 | 요구 |
-|---|---|
-| 02 §3 | 개발 의존성에 `hypothesis`, `jsonschema` 추가 |
-| 02 §15.1 | 샌드박스 전용 환경 변수 `DAYCLOSE_TEST_NOW`(고정 시각), `DAYCLOSE_TEST_FAULT`(체크포인트 장애 주입) 추가 — 둘 다 `DAYCLOSE_SANDBOX` 없으면 무시 |
-| 02 §6, 08 | `run_tool` 은 시스템 도구를 절대경로로 실행(PATH 무시), 샌드박스에서만 `$SANDBOX/bin` 우선 |
-| 02 §6, 04, 08, 09 | 고정 시스템 경로는 `common/paths.system_path(name)` 경유(§2.3 표) |
-| 02 §10.4 | `DAYCLOSE_SANDBOX` 설정 시 core 가 감사 훅 가드를 설치, `DAYCLOSE_HOME` 이 샌드박스 밖이면 시작 거부 |
-| 02 §14 | `app/DayCloseUITests/` 타깃 이름 |
-| 08 | apply 시 `plan_operations` 행으로 `plan_hash` 재계산(저장값 비교만으로는 DB 조작을 못 막음), 체크포인트 이름 목록, `not_undoable` 사유 코드 |
-| 04 | `collect/fs` 의 `lstat` 을 테스트에서 대체할 수 있는 지점(dataless `st_flags` 주입) |
-| 05 | 시드 단어 목록 모듈 위치(생성기가 공유), 합성 주민등록번호가 통과해야 할 검증 규칙 |
-| 03 | 갤러리 스크롤 성능의 측정 지표·수치 |
+| 대상 | 요구 | 상태(2026-11-24 재조정 후) |
+|---|---|---|
+| 02 §3 | 개발 의존성 `hypothesis`, `jsonschema` | 반영됨 |
+| 02 §10.4·§15.1 | `DAYCLOSE_TEST_NOW`, `DAYCLOSE_TEST_FAULT`(샌드박스 전용), 감사 훅 가드, `DAYCLOSE_HOME` 이 샌드박스 밖이면 시작 거부 | 반영됨 |
+| 02 §6·§10.3-4 | `run_tool` 절대경로·고정 환경, 샌드박스에서만 `$SANDBOX/bin` 우선 | 반영됨 |
+| 02 §6, 04, 08, 09 | 고정 시스템 경로는 `common/paths.system_path(name)` 경유(§2.3 표) | 02 반영됨, 04·09 의 경로 목록과 §2.3 표 대조 필요 |
+| 02 §14 | `app/DayCloseUITests/` | 반영됨 |
+| 08 | apply 시 해시 재계산·감사 교차·24시간 | 반영됨(08 §7.1 G4~G6) |
+| 08 | **체크포인트 이름 목록**(§6.1 F01~F05·F20·F29·F40 이 쓰는 `op.running_committed`, `op.fs_done`, `xdev.copy_partial`, `xdev.verified`, `xdev.src_removed`, `undo.undoing_committed`, `undo.fs_done`, `migrate.mid`) | **남음** — 08 에 이름이 없다. 08 이 다른 이름을 정하면 그쪽을 쓴다 |
+| 04 | `collect/fs` 의 `lstat` 대체 지점(dataless `st_flags` 주입, §3.9) | **남음**(확인 필요) |
+| 05 | 시드 단어 목록 모듈 위치, 합성 주민등록번호 검증 규칙 | **남음**(확인 필요) |
+| 03 | 갤러리 스크롤 성능의 측정 지표·수치 | **남음**(확인 필요) |
 
 ---
-
 ## 12. 실행 명령
 
 ```bash

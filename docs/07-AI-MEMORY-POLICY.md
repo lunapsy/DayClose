@@ -20,7 +20,7 @@
 |---|---|
 | 게이트를 통과한 항목들의 **메타데이터**를 보고 작업 그룹으로 묶고 라벨을 붙인다 | 파일을 읽는다(받은 메타데이터만 다룸, 02 §6). `run_tool`·`executor` import 금지 |
 | 주어진 **후보 프로젝트** 중 하나와 연결한다 | 후보에 없는 프로젝트·경로를 만든다 |
-| 항목의 `allowed_actions` 중 `keep`/`move`/`archive`/`trash` 하나를 제안한다 | `keep_always`·`acknowledge`·`defer` 제안, 결정 생성, 승인, plan 생성 |
+| 항목의 `allowed_actions` 중 `keep`/`move`/`archive`/`trash` 하나를 제안한다 | `keep_always`·`acknowledge`·`defer`·`rename` 제안(결정: 새 파일명은 결정론적 OCR 규칙만 만든다 — 04 §6.1), 결정 생성, 승인, plan 생성 |
 | 주어진 **목적지 후보**(`dest_ref`) 중 하나를 고른다 | 자유 형식 경로를 제안한다 |
 | 80자 이하의 이유 문구를 쓴다 | 보호 등급·민감도를 바꾼다(낮추기·올리기 모두 결정론적 코드만) |
 | — | 학습 규칙(`policy_rules`)을 만들거나 수락한다 |
@@ -59,7 +59,7 @@ CONTEXT 턴0 §6 의 세 단계와의 대응:
 |---|---|---|
 | `secret` | 항목이 `protection=security_asset`; 엔트리에 `vault_findings(plaintext_secret|seed_phrase_suspected)` 가 open/acknowledged; gitleaks 적중 | 05 |
 | `patient` | `protection=patient_data` — 판정은 기본 패턴만(파일명 패턴 `config.protection.patient_filename_patterns`, 로컬 텍스트의 주민등록번호 `detect_rrn_in_text`) + 사용자가 직접 추가한 `patient_data` 보호 규칙. 환자 폴더 설정은 없다(02 §9, 소유자 결정 2026-11-24); OCR/추출 텍스트에 주민등록번호 패턴(FR-SO-006) | policy(보호), 05 와 패턴 공유 |
-| `personal` | category `screenshot`(OCR 전후 모두 — 아래 결정); category `image` 중 카메라 EXIF(Make/Model) 있음 또는 ext ∈ {heic, heif, dng, raw, cr2, cr3, nef, arw}; category `media` 중 origin `screenshots`; category `document` 중 origin `documents` 또는 `icloud_drive`; **dataless 파일 전부**(내용 검사를 할 수 없으므로); ext ∈ {ics, vcf, eml}; 사용자 보호 규칙의 `sensitivity` 지정값 | policy |
+| `personal` | category `screenshot`(OCR 전후 모두 — 아래 결정); category `image` 중 카메라 EXIF(Make/Model) 있음 또는 ext ∈ {heic, heif, dng, raw, cr2, cr3, nef, arw}; category `media` 중 origin `screenshots`; category `document` 중 origin `documents`·`icloud_drive` 또는 루트 `scan_roots.icloud_synced=1`; **dataless 파일 전부**(내용 검사를 할 수 없으므로); ext ∈ {ics, vcf, eml}; 사용자 보호 규칙의 `sensitivity` 지정값 | policy |
 | `normal` | 그 외 | — |
 
 결정: OCR 이 아무것도 찾지 못해도 스크린샷은 `personal` 아래로 내리지 않는다. 이유: 정규식은 화면 속 이름·대화·계좌 같은 개인 정보를 다 잡지 못한다. 06 §3.1 의 “OCR 결과가 나오기 전까지 personal” 은 상한이 아니라 하한으로 해석한다.
@@ -88,7 +88,7 @@ ai_policy(item, cfg):
 2. **재평가**: 게이트는 DB 의 캐시된 값이 아니라 그 순간 `policy` 로 `protection`·`sensitivity`·`ai_policy` 를 **다시 계산**한다. 엔트리의 mtime 이 마지막 판정 이후 바뀌었으면 vault·환자 패턴 판정을 먼저 다시 돌린다(05·policy 함수 호출). 판정 중 예외 → 그 항목은 차단(fail-closed).
 3. **허용 필드 목록**: 페이로드는 §8.2 표의 필드만 명시적으로 골라 만든다. 행 객체·dict 전체를 넘기는 코드는 금지(정적 검사: `gate.py` 안에서 `**row`, `row.__dict__`, `dict(row)` 사용 금지 테스트).
 4. **마스킹 후 최종 검사**: 직렬화된 JSON 바이트를 `common/logging.RedactingFilter` 의 비밀 패턴 + 주민등록번호 패턴 + 전화번호·이메일 패턴으로 검사. 적중 시 해당 항목을 빼고 재생성, 두 번째 적중이면 요청 전체 중단 + `E_AI_BLOCKED_SENSITIVE`(`details.blocked_count`), `ai_requests.status='rejected_output'` 가 아니라 요청 자체를 보내지 않으므로 `ai_requests` 행은 `status='error'`, `item_count=0` 으로 남긴다.
-5. **import 경계**(정적 테스트, 11 문서): `ai/` 는 `executor`, `common/proc` 을 import 불가. 네트워크 모듈(`urllib.request`, `http.client`, `socket`, `ssl`, `anthropic`, `openai`)을 import 할 수 있는 곳은 `ai/providers/` 뿐이고, `ai/providers/` 를 import 할 수 있는 곳은 `ai/client.py` 뿐이다.
+5. **import 경계**(정적 테스트, 11 문서): `ai/` 는 `executor`, `common/proc` 을 import 불가. 네트워크 모듈(`urllib.request`, `http.client`, `socket`, `ssl`)을 import 할 수 있는 곳은 `ai/providers/` 뿐이고, `ai/providers/` 를 import 할 수 있는 곳은 `ai/client.py` 뿐이다. `anthropic`·`openai` 패키지는 의존성이 아니므로 import 자체가 금지(02 §3).
 6. **꺼짐 보장**: `ai.enabled=false` 이면 `ai/client.get_provider()` 가 `None` 을 반환하고 `ai.classify` 는 `E_AI_DISABLED`. `scan.run`·`review.*` 는 `ai` 를 호출하지 않는다(AI 분류는 명시 명령 `ai.classify` 로만 — M7 에서 예약 실행이 호출하려면 그때 별도 설정 키로). 테스트: 전체 스위트에서 `socket.socket.connect` 를 패치해 `ai.enabled=false` 경로의 연결 시도가 0인지 확인(FR-SO-005 AC, NFR-PRIV-002).
 
 ---
@@ -104,16 +104,17 @@ collector 가 항목을 만들 때(`detected`), 다음을 순서대로 평가하
 | match_type | 일치 조건 | 비고 |
 |---|---|---|
 | `entry_identity` | (a) 새 항목의 `entry_id` 가 suppression 을 만든 결정의 항목 `entry_id` 와 **같다**, 또는 (b) `match_value == "<dev>:<inode>"` 이고 원래 엔트리가 아직 `present=1` 이며 그 엔트리가 곧 새 항목의 엔트리 | 결정: 1순위는 엔트리 행 계보(04 §2.4 에서 이동·볼륨 간 이동은 같은 행을 유지). 이유: inode 재사용으로 **엉뚱한 새 파일이 조용히 숨는 것**을 막는다. 원래 엔트리가 삭제(`present=0`)됐으면 (b) 는 성립하지 않는다 |
-| `path` | `subject_path == match_value` (login_item 의 plist 경로) | |
+| `path` | `subject_path == match_value` | login_item 의 `keep_always`(plist 경로) 또는 사용자 `suppression.add --match path` |
 | `bundle_id` | 앱 `bundle_id` 일치 | |
 | `package` | `"<manager>:<name>"` 일치 | |
 | `repo` | `project_id` 일치 | |
-| `path_glob` | `fnmatch(subject_path, match_value)`, 대소문자 구분 | 사용자 명시 생성만(06 §4.3). 현재 생성 명령이 없음 → 보고서 |
-| `sha256` | 엔트리 `sha256` 일치(이미 계산된 경우만; 매칭을 위해 해시하지 않음) | 사용자 명시 생성만 |
+| `path_glob` | `fnmatch(subject_path, match_value)`, 대소문자 구분, `*` 는 `/` 를 넘지 않고 `**` 는 넘는다 | 사용자 명시 생성만: `suppression.add --match path_glob --value V [--category C] [--expires DATE]`(02 §5.3) |
+| `sha256` | 엔트리 `sha256` 일치(이미 계산된 경우만; 매칭을 위해 해시하지 않음 — dataless·64MB 초과·보안 자산 엔트리는 `sha256` 이 NULL 이라 일치하지 않음) | 사용자 명시 생성만: `suppression.add --match sha256` |
 
 - `suppressions.category` 가 NULL 이 아니면 항목 카테고리도 같아야 한다.
 - 활성 조건: `removed_at IS NULL AND (expires_at IS NULL OR expires_at > now)`.
-- **보호 등급과의 관계**: suppression 은 항목을 숨길 뿐 보호를 낮추지 않는다. `security_asset` 항목도 `keep_always` 가능(02 §10.1 허용 동작)하지만, vault 의 **발견 사항**(만료 임박 등)은 suppression 과 무관하게 계속 보고된다(05). 결정: “다시 묻지 마” 는 “이 파일을 정리할지 묻지 마” 이지 “보안 경고를 끄라” 가 아니다.
+- **보호 등급과의 관계(06 §4.3)**: `protection ∈ {security_asset, patient_data}` 항목에는 **어떤 suppression 도 적용하지 않는다** — 매칭을 평가하기 전에 이 두 등급이면 건너뛴다. 이 항목들의 `keep_always` 결정은 허용 동작(02 §10.1)이지만 suppression 행을 만들지 않으므로 효과는 `keep`(종결)과 같고, 다른 루트로 옮겨 재탐지되면 다시 묻는다. vault 의 **발견 사항**(만료 임박 등)은 언제나 보고된다(05). 결정 이유: 보안·환자 항목은 조용히 숨기지 않는다 — “다시 묻지 마” 는 “이 파일을 정리할지 묻지 마” 이지 “보안 경고를 끄라” 가 아니다.
+- `suppression.add` 는 생성 시점에 이미 열린 항목을 소급해 숨기지 않는다(다음 탐지부터 적용). 결정: 사용자가 지금 보고 있는 결재함이 명령 하나로 바뀌지 않게.
 - 숨겨진 항목 수는 `stats_json.suppressed_today` 로 집계해 리포트의 “조용히 유지 N개” 에 쓴다.
 
 ### 4.2 만료·해제
@@ -151,7 +152,7 @@ collector 가 항목을 만들 때(`detected`), 다음을 순서대로 평가하
 
 학습 입력 = 아래를 **모두** 만족하는 결정:
 - `actor='user'`, `revoked_at IS NULL`, 최근 `policy.learn_window_days`(기본 60일).
-- `action ∈ {trash, move, archive, keep, acknowledge}` — `keep_always`(이미 개체 단위 기억), `defer`(판단 보류)는 제외.
+- `action ∈ {trash, move, archive, keep, acknowledge}` — `keep_always`(이미 개체 단위 기억), `defer`(판단 보류), `rename`(새 이름이 파일마다 달라 일반화할 수 없음)은 제외. `policy_rules.action` 은 스키마상 `rename` 을 허용하지만 학습은 `rename` 규칙을 만들지 않는다.
 - 결정 당시 항목 `protection='none'`, `sensitivity ∈ {normal, personal}`.
 - 이후 그 항목의 연산이 `plan.undo` 로 되돌려졌으면(항목 `undone`) **반대 증거**로 센다.
 
@@ -184,8 +185,8 @@ T4 {category, origin_root_kind}
 
 ### 5.4 수락·거절
 
-- `policy.accept RULE_ID`: `suggested`/`disabled` → `active`, `decided_at`. 결정: 수락 응답 `data` 에 “이 규칙은 앞으로 일치하는 항목을 자동으로 결정합니다. 파일은 계획을 승인할 때만 바뀝니다.” 문구와 현재 열린 항목 중 일치 수를 담는다(10 문서가 필드 확정).
-- `policy.reject RULE_ID`: `suggested` → `rejected`; **`active` → `disabled`**(사용자가 끔). 결정: 별도 `disable` 명령을 만들지 않고 02 §5.3 의 기존 명령 의미를 상태별로 정한다.
+- `policy.accept PRL_ID`: `suggested`/`disabled` → `active`, `decided_at`. 결정: 수락 응답 `data` 에 “이 규칙은 앞으로 일치하는 항목을 자동으로 결정합니다. 파일은 계획을 승인할 때만 바뀝니다.” 문구와 현재 열린 항목 중 일치 수를 담는다(10 문서가 필드 확정).
+- `policy.reject PRL_ID`: `suggested` → `rejected`; **`active` → `disabled`**(사용자가 끔). 02 §5.3·06 §4.7 과 같다. `rejected` 는 종결(같은 조건은 쿨다운 후 새 규칙 행으로만 다시 제안). `policy.suggestions --state S` 로 상태별 조회.
 - 수락은 사람만(쓰기 명령, 채널 기록). MCP(M8)에서 `policy.accept` 를 노출할지는 10 문서 — 이 문서의 권고: **노출하지 않는다**(규칙 활성화는 이후 다수 항목의 결정을 대신하므로 승인에 준한다).
 
 ### 5.5 적용 (자동 결정)
@@ -195,8 +196,8 @@ T4 {category, origin_root_kind}
 1. 적격성: `protection='none'`, `sensitivity ∈ {normal, personal}`, suppression 미일치, 사용자 결정 이력 없음(같은 항목에 `actor='user'` 결정이 한 번이라도 있었으면 제외 — `decision.undo` 로 되돌린 항목 포함).
 2. 일치 규칙 = 조건이 일치하는 `active` 규칙들.
 3. 규칙이 하나이거나, 여러 개여도 동작·목적지가 모두 같으면 → 그 동작. 서로 다르면 **충돌** → 자동 결정 안 함, 제안만 `source='rule'`(가장 구체적 규칙), 이유 끝에 “(규칙 충돌)”.
-4. 거부 조건(하나라도 해당하면 자동 결정 안 하고 제안만): 동작이 `allowed_actions` 밖 / 휴리스틱이 다른 동작을 confidence ≥ 0.6 으로 제안(예: 04 H5 “업데이트 미적용” 인데 규칙은 trash) / `move` 인데 목적지 템플릿이 해석되지 않음 / 규칙당 하루 자동 결정 상한 `policy.auto_apply_daily_cap`(**200**) 초과.
-5. 통과 → `decisions(actor='rule', rule_id, scope='item', channel=<scan 채널>, request_id)` 생성, 항목 `proposed → decided`(06 §4.1 의 같은 전이), `suggestion_source='rule'`, 그룹 `habit:<rule_id>`(04 §9), `policy_rules.last_applied_at`.
+4. 거부 조건(하나라도 해당하면 자동 결정 안 하고 제안만): 동작이 `allowed_actions` 밖 / 휴리스틱이 다른 동작을 confidence ≥ 0.6 으로 제안(예: 04 H5 “업데이트 미적용” 인데 규칙은 trash) / `move` 인데 목적지 템플릿이 해석되지 않음 / 규칙당 하루 자동 결정 상한 `policy.auto_apply_daily_cap`(**200**) 초과 / **동작이 `trash` 이고 항목이 iCloud 동기화**(실효 상태 = 저장된 루트 값 OR 실시간 신호 — 04 §1.1, 08 §9.2. 사용자가 루트를 `no` 로 지정했어도 실시간 신호가 양성이면 iCloud 동기화로 본다)(게이트가 열려 `allowed_actions` 에 trash 가 있어도 — 02 §10.1 예외 2: iCloud 동기화 항목의 trash 결정은 사람이 항목 단위로만). 이 경우 제안(`source='rule'`)만 채우고 이유 끝에 “(다른 기기에서도 삭제됩니다 — 직접 결정해 주세요)”, 그룹은 `habit:` 이 아니라 일반 그룹.
+5. 통과 → `decisions(actor='rule', rule_id, scope='item', channel=<scan 채널>, request_id)` 생성, 항목 `proposed → decided`(06 §4.1 의 같은 전이), `suggestion_source='rule'`, 그룹 `habit:<policy_rules.id>`(04 §9), `policy_rules.last_applied_at`.
 
 - `policy.auto_apply=false`(설정)이면 4·5 를 하지 않고 제안만 채운다(`source='rule'`, confidence 0.85).
 - 자동 결정된 항목은 이후 단계가 사용자 결정과 같다: `plan.create --all-decided` 에 포함되고, **`plan.approve` 는 사람만**(02 §10.3). 계획 요약에 “규칙으로 결정된 연산 N개(규칙 이름)” 를 따로 표시한다(08·03).
@@ -231,7 +232,7 @@ T4 {category, origin_root_kind}
   "explanation": {
     "source": "rule",
     "summary": "‘다운로드의 설치 완료 설치 파일 → 휴지통’ 규칙에 따라 자동으로 결정했습니다.",
-    "rule": {"id": "rul_2", "name": "다운로드의 설치 완료 설치 파일 → 휴지통", "accepted_at": "2026-11-17T12:10:00.000Z",
+    "rule": {"id": "prl_2", "name": "다운로드의 설치 완료 설치 파일 → 휴지통", "accepted_at": "2026-11-17T12:10:00.000Z",
              "evidence_count": 6, "evidence_days": 4, "consistency": 1.0},
     "signals": [
       {"id": "H3", "text": "설치된 앱 Foo 1.2.3 과 이름·버전이 일치", "weight": 0.85},
@@ -244,7 +245,8 @@ T4 {category, origin_root_kind}
 }
 ```
 
-- `signals` 는 04 의 규칙 ID(H1~H12, 매칭 신호 A~E, 스크린샷 신호)를 근거로 **`item.show` 시점에 결정론적으로 재계산**한다. 결정: 신호 목록을 DB 에 저장하지 않는다(06 에 컬럼 없음). 재계산이 탐지 당시와 다를 수 있으면(예: 앱이 그 사이 삭제) `summary` 에 “현재 상태 기준” 을 붙인다 → 저장이 필요하면 06 에 컬럼 추가(보고서).
+- `signals` 는 04 의 규칙 ID(H1~H12, 매칭 신호 A~E, 스크린샷 신호)를 근거로 **`item.show` 시점에 결정론적으로 재계산**한다. 결정: 신호 목록을 DB 에 저장하지 않는다(02 §5.3 `item.show` 비고와 같음). 재계산이 탐지 당시와 다를 수 있으면(예: 앱이 그 사이 삭제) `summary` 에 “현재 상태 기준” 을 붙인다.
+- **에이전트 채널 투영**(`--channel skill|mcp`, 02 §5.6 `agent_view`): `sensitivity ∈ {patient, secret}` 항목의 `explanation` 은 `summary`·`signals[].text`·`protection.why` 에서 파일명·경로를 빼고 규칙 ID 와 종류만 남긴다(예 `{"id": "H1", "text": null}`). `normal`·`personal` 항목은 이름·`display_path` 를 그대로 보여 준다(소유자 결정 C15). 이 투영은 AI 게이트(§3)와 별개다 — 에이전트에 이름을 보여 주는 것은 외부 모델 전송 허용을 뜻하지 않는다. 이 투영은 `api` 의 `agent_view` 한 곳에서 하고 07 의 코드가 따로 하지 않는다.
 - `protection.why`: 보호 등급의 이유(“활성 저장소 PL-Agent 내부(최근 커밋 2일 전)”, “환자 자료 규칙”). 보안 자산·환자 자료는 **파일명·경로를 쓰지 않고** 규칙 종류만(“파일명 패턴 규칙”).
 - `ai`: AI 제안이면 `{"provider": "ollama", "model": "...", "request_ts": "...", "label": "...", "reason": "..."}`. 이유 문구는 “AI:” 접두사로 사람이 쓴 문구와 구분해 표시(03).
 - `review.summary` 에도 제안된 규칙마다 근거 요약 한 줄(“최근 2주간 6번, 4일에 걸쳐 같은 결정”).
@@ -255,8 +257,8 @@ T4 {category, origin_root_kind}
 
 | 무엇 | 어디 | 내용 |
 |---|---|---|
-| 모든 쓰기 명령(`policy.accept/reject`, `ai.classify`, `suppression.remove`) | `audit_log`(06 §5.1) | 채널·결과·대상 ID. 요약 예 `"ai.classify ollama items=12 blocked=3"` |
-| 규칙의 자동 결정 | `decisions(actor='rule', rule_id)` | 항목별 1행. `audit_log` 에는 `scan.run` 요약 `"rule decisions ×14 (rul_2)"` |
+| 모든 쓰기 명령(`policy.accept/reject`, `ai.classify`(`--dry-run` 제외), `ai.key.set/remove`, `suppression.add/remove`) | `audit_log`(06 §5.1) | 채널·결과·대상 ID. 요약 예 `"ai.classify ollama items=12 blocked=3"` |
+| 규칙의 자동 결정 | `decisions(actor='rule', rule_id)` | 항목별 1행. `audit_log` 에는 `scan.run` 요약 `"rule decisions ×14 (prl_2)"` |
 | AI 요청 | `ai_requests`(06 §5.5) | 요청당 1행: provider, model, external, purpose, item_count, blocked_count, `payload_sha256`(실제 전송 바이트의 해시), status(`ok`/`error`/`timeout`/`rejected_output`), latency, request_id. **본문 저장 금지** |
 | 로그 | `core.log` | `event="ai.request"` 에 위 메타데이터만. 페이로드·응답·이유 문구 금지(02 §13) |
 
@@ -281,12 +283,13 @@ class Provider(Protocol):
 | provider | 위치 | 인증 | 기본 타임아웃 | 비고 |
 |---|---|---|---|---|
 | `none` | — | — | — | 기본값. 모든 AI 명령 `E_AI_DISABLED` |
-| `ollama` | `ai.ollama_url`(기본 `http://127.0.0.1:11434`) | 없음 | 60초 | 표준 라이브러리 `urllib.request` 로 충분. 모델 저장소가 외장 볼륨이면 launchd 로 뜬 ollama 가 TCC 로 멈출 수 있으므로(CLAUDE.md·02 §10.5 와 같은 현상) 타임아웃 → `status='timeout'`, 경고로 종료 |
-| `anthropic` | 외부 | Keychain `com.dayclose.ai`/`anthropic` | 30초 | 공식 SDK(`anthropic`) 사용 권장 → 02 §3 의존성 목록 변경 필요(보고서). 모델은 사용자 선택(`ai.model`), 저비용 분류 예: `claude-haiku-5-5` |
-| `openai` | 외부 | Keychain `com.dayclose.ai`/`openai` | 30초 | 같은 이유로 SDK 또는 `urllib` — 02 에서 결정 |
+| `ollama` | `ai.ollama_url`(기본 `http://127.0.0.1:11434`) | 없음 | `timeout_s`(60) | `urllib.request`. 모델 저장소가 외장 볼륨이면 launchd 로 뜬 ollama 가 TCC 로 멈출 수 있으므로(CLAUDE.md·02 §10.5 와 같은 현상) 타임아웃 → `status='timeout'`, 경고로 종료 |
+| `anthropic` | 외부 | Keychain `com.dayclose.ai`/`anthropic` | min(`timeout_s`, 30) | `urllib.request` 로 Messages API 를 직접 호출(SDK 의존성 없음, 02 §3). 요청 헤더·필드·구조화 출력 형식은 구현 시 공식 API 문서로 확인. 모델은 사용자 선택(`ai.model`), 저비용 분류 예: `claude-haiku-5-5` |
+| `openai` | 외부 | Keychain `com.dayclose.ai`/`openai` | min(`timeout_s`, 30) | `urllib.request` 로 직접 호출(SDK 없음). 같은 확인 원칙 |
 
 - `ai.model` 이 비어 있는데 `enabled=true` → `ai.status`/`ai.classify` 가 `E_CONFIG_INVALID`.
-- API 키는 Keychain 에만(02 §9). 설정 파일·환경변수·argv 금지. 테스트는 공급자를 가짜(`FakeProvider`)로 교체하고 실제 네트워크·Keychain 접근 금지.
+- 결정(02 §3): 세 공급자 모두 표준 라이브러리 `urllib.request` + `ssl` 기본 컨텍스트(인증서 검증 끄기 금지)로 호출하고 SDK 를 쓰지 않는다. 이유: 런타임 의존성 최소화, 요청 1회 왕복이라 SDK 기능(스트리밍·재시도·도구)이 필요 없다. 재시도는 하지 않는다(실패 → `W_AI_REQUEST_FAILED`, 사용자가 다시 실행).
+- API 키는 Keychain 에만(02 §9). 등록 `dayclose ai key set PROVIDER`(키는 **stdin 으로만**), 삭제 `dayclose ai key remove PROVIDER`(02 §5.3). 설정 파일·환경변수·argv 금지, 키 값은 응답·로그·감사·`ai.status` 어디에도 나오지 않는다(`ai.status` 는 `key_present: true|false` 만). 테스트는 공급자를 가짜(`FakeProvider`)로 교체하고 실제 네트워크·Keychain 접근 금지.
 - 외부 공급자의 데이터 보존·학습 사용 여부는 각 공급자 약관이 정한다. DayClose 는 이를 보장할 수 없으므로 `ai.allow_external=true` 로 바꿀 때 `config.set` 응답에 경고 문구(“파일 이름 등 메타데이터가 외부 서비스로 전송되며 해당 서비스의 보존 정책이 적용됩니다”)를 넣는다.
 
 ### 8.2 페이로드 스키마 (모델 입력)
@@ -348,7 +351,7 @@ class Provider(Protocol):
 
 `text_excerpt` 마스킹: 같은 규칙을 텍스트 전체에 적용하되 2번 적중 시 항목 전체 차단.
 
-한계(문서화된 위험): 정규식은 사람 이름을 찾지 못한다. 그래서 개인 정보 비율이 높은 범주(스크린샷·사진·Documents 문서)는 §3.1 에서 `personal` → 외부 전송 불가로 막고, 외부 전송은 사용자가 명시적으로 켜야 한다(`allow_external`). `ai.classify --dry-run`(실제 전송 없이 게이트를 통과한 페이로드를 출력)을 두어 사용자가 무엇이 나가는지 직접 확인할 수 있게 한다 → 02 §5.3 에 플래그 추가 필요(보고서).
+한계(문서화된 위험): 정규식은 사람 이름을 찾지 못한다. 그래서 개인 정보 비율이 높은 범주(스크린샷·사진·Documents 문서)는 §3.1 에서 `personal` → 외부 전송 불가로 막고, 외부 전송은 사용자가 명시적으로 켜야 한다(`allow_external`). `ai classify --dry-run`(02 §5.3)으로 사용자가 무엇이 나가는지 전송 없이 확인한다. 응답 `data`(필드 확정은 10): `provider`, `external`, `would_send`(항목 수), `blocked`(수)와 `blocked_by`(이유별 수: `sensitivity`, `protection`, `redaction`, `not_allowed_external`), `fields`(전송될 필드 이름 목록), `sample`(게이트·마스킹을 거친 `items[]` 앞 5개 — 실제 전송될 바이트와 같은 값). 공급자 호출·`ai_requests` 행·쓰기 잠금 없음. 에이전트 채널에서도 `sample` 은 이미 게이트를 통과한 값이라 `agent_view` 추가 제거 대상이 없다.
 
 ### 8.4 시스템 프롬프트 요지 (고정, 버전 `prompt_v1`)
 
@@ -384,7 +387,9 @@ JSON Schema(`additionalProperties: false` 전 수준): `label` 1~40자, `item_re
 | `action` 이 그 항목의 `allowed` 밖 | 그 항목의 동작을 null 로 |
 | `action='move'` 인데 `dest_ref` null, 또는 `dest_ref` 의 프로젝트 ≠ `project_ref` | 동작 null |
 | `action` 이 `move` 가 아닌데 `dest_ref` 가 있음(`archive` 포함) | `dest_ref` 무시 |
+| `action ∈ {move, archive}` 이고 항목이 iCloud 동기화 | 동작 null — v1 에서 불허(확정). `allowed` 에도 없으므로 “허용 밖” 규칙과 같은 결과 |
 | `action='trash'` 이고 항목 카테고리가 `document`/`code`/`image` | 동작 null. 결정: AI 단독으로 작업물을 휴지통 제안하지 않는다(설치 파일·압축 파일·misc 만 허용) |
+| `action='trash'` 이고 항목이 iCloud 동기화(04 §1.1 의 실효 상태, 실시간 신호 포함) | `allowed` 에 trash 가 있을 때(게이트 열림, 다운로드됨)만 유지하고 위 카테고리 제한·confidence 상한(§8.6)을 그대로 적용, 추가로 confidence 상한 0.6. 반영 시 이유 끝에 “(다른 기기에서도 삭제됩니다)”. 게이트가 닫혀 있으면 애초에 `allowed` 에 trash 가 없으므로 위 “허용 밖” 규칙으로 null |
 | `label`/`reason` 에 제어문자·URL·경로 구분자(`/` 2개 이상)·`«` 토큰 이외의 꺾쇠 마크업 | 해당 문자열 정리(제거) 후 비면 기본 문구 “AI 가 묶은 항목” |
 | 폐기된 그룹 비율 > 50% | 응답 전체 폐기(`rejected_output`) — 모델이 과제를 이해하지 못한 것으로 본다 |
 
@@ -393,7 +398,7 @@ JSON Schema(`additionalProperties: false` 전 수준): `label` 1~40자, `item_re
 - 반영 대상: 요청 시점 이후에도 여전히 `proposed` 이고 사용자 결정·규칙 결정이 없는 항목만(동시 결정 경쟁 방지 — 반영은 쓰기 잠금 안에서 상태 재확인).
 - 항목: `suggested_action`, `suggested_dest`(dest_ref → 실제 경로로 core 가 치환), `suggestion_source='ai'`, `suggestion_reason`=정리된 `reason`, `confidence = min(ai_confidence, 0.75)`. 결정: AI 제안은 UI 의 일괄 기본 선택 기준(0.8, 04 §13)에 닿지 않게 상한을 둔다.
 - 프로젝트: `project_ref` 가 있으면 `review_items.project_id` 설정(휴리스틱 매칭 점수 0.4~0.6 이던 항목도 AI 가 확정 가능).
-- 그룹: 그룹 구성원이 2개 이상이면 04 §9 의 `ai:<hash>` 그룹으로 재배정, 제목 = `label`. 구성원 1개면 그룹 재배정 없이 제안만.
+- 그룹: 그룹 구성원이 2개 이상이면 04 §9 의 `ai:<hash>` 그룹으로 재배정, 제목 = `label`. 그룹 제안 계산에서 `icloud_synced` 항목의 trash 는 제외(04 §13, `--group` 결정이 건너뛰므로). 구성원 1개면 그룹 재배정 없이 제안만.
 - `unassigned` 항목은 변화 없음.
 - AI 반영은 학습 증거에 영향이 없다. 사용자가 AI 제안을 따른 결정은 일반 사용자 결정(증거 포함).
 
@@ -406,14 +411,14 @@ JSON Schema(`additionalProperties: false` 전 수준): `label` 1~40자, `item_re
 | 키 없음(Keychain) | 호출 없음 | `E_AI_DISABLED`(`details.reason="api_key_missing"`, 02 §9) |
 | 게이트 후 대상 0건 | 호출 없음 | 성공, `data.sent=0`, `data.blocked=N` |
 | 최종 검사 2회 적중 | 호출 없음 | `E_AI_BLOCKED_SENSITIVE` |
-| 타임아웃·연결 실패·HTTP 오류 | `ai_requests.status='timeout'|'error'`, 다른 배치는 계속 | 성공 + 경고(코드는 02 에 추가 필요: `W_AI_REQUEST_FAILED` 제안) |
-| 출력 검증 실패 | `status='rejected_output'`, 변화 없음 | 성공 + 경고(`W_AI_OUTPUT_REJECTED` 제안) |
+| 타임아웃·연결 실패·HTTP 오류 | `ai_requests.status='timeout'|'error'`, 다른 배치는 계속 | 성공 + 경고 `W_AI_REQUEST_FAILED` |
+| 출력 검증 실패 | `status='rejected_output'`, 변화 없음 | 성공 + 경고 `W_AI_OUTPUT_REJECTED` |
 
 AI 실패는 결산·결정·계획 어떤 흐름도 막지 않는다.
 
 ---
 
-## 9. 설정 키 (02 §9 에 추가 필요)
+## 9. 설정 키 (02 §9 에 반영됨 — 이 표는 참조용 사본)
 
 ```toml
 [ai]
@@ -421,11 +426,11 @@ enabled = false
 provider = "none"
 model = ""
 allow_external = false
-ollama_url = "http://127.0.0.1:11434"   # 추가
-timeout_s = 60                          # 추가 (외부 공급자는 min(timeout_s, 30))
-max_items_per_request = 100             # 추가
+ollama_url = "http://127.0.0.1:11434"   # 루프백이 아니면 외부
+timeout_s = 60                          # 외부 공급자는 min(timeout_s, 30)
+max_items_per_request = 100
 
-[policy]                                # 추가 (M6)
+[policy]                                # M6
 learn_window_days = 60
 learn_min_evidence = 5
 learn_min_days = 3

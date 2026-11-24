@@ -46,7 +46,8 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `subject_type` | `file`, `dir`, `app`, `package`, `git_repo`, `login_item` |
 | `item_category` | `screenshot`, `image`, `document`, `installer`, `compressed`, `media`, `code`, `folder`, `misc`, `dev_cache`, `security_asset`, `app`, `package`, `git_repo`, `login_item` |
 | `item_state` | `detected`, `proposed`, `decided`, `planned`, `executed`, `undone`, `failed`, `stale`, `suppressed` |
-| `decision_action` | `keep`, `keep_always`, `trash`, `move`, `archive`, `defer`, `acknowledge` |
+| `decision_action` | `keep`, `keep_always`, `trash`, `move`, `archive`, `rename`(M6), `defer`, `acknowledge` |
+| `file_decision_action` (부분집합, 파일 연산을 낳는 것) | `trash`, `move`, `archive`, `rename` |
 | `decision_actor` | `user`, `rule` |
 | `channel` | `cli`, `app`, `skill`, `mcp`, `schedule`, `test` |
 | `suggestion_source` | `none`, `heuristic`, `rule`, `ai` |
@@ -57,8 +58,10 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `plan_state` | `draft`, `approved`, `executing`, `completed`, `partial`, `failed`, `cancelled`, `undone`, `partially_undone` |
 | `op_type` | `trash`, `move`, `archive`, `rename`(M6), `restore` |
 | `op_state` | `pending`, `running`, `done`, `failed`, `skipped` |
-| `undo_state` | `not_applicable`, `undoable`, `undone`, `undo_failed`, `not_undoable` |
-| `approval_method` | `app_button`, `cli_tty`, `native_dialog`, `test` |
+| `undo_state` | `not_applicable`, `undoable`, `undoing`, `undone`, `undo_failed`, `not_undoable` |
+| `closed_reason` | `suppressed`, `subject_gone`, `subject_changed`, `executed`, `undone` |
+| `blocked_reason` (항목 JSON 전용, 02 §5.6) | `security_asset`, `patient_data`, `active_repo`, `system`, `user_rule`, `icloud_synced`, `dataless`, `subject_type`, `archive_root_unset`, `not_yet_available` |
+| `approval_method` | `app_button`(Secure Enclave 서명 검증 성공일 때만), `cli_tty`, `native_dialog`, `test` |
 | `vault_asset_kind` | `certificate`, `pkcs12`, `private_key`, `ssh_private_key`, `ssh_config`, `env_file`, `api_credential`, `cloud_credential`, `apple_signing`, `android_keystore`, `vpn_config`, `crypto_wallet`, `crypto_seed_suspected`, `db_credential`, `recovery_codes`, `npki_cert`, `unknown_secret` |
 | `vault_detect_method` | `extension`, `filename`, `location`, `magic`, `content_pattern`, `gitleaks` |
 | `vault_asset_status` | `active`, `missing`, `retired` |
@@ -72,7 +75,7 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `project_kind` | `git`, `folder` |
 | `package_manager` | `brew_formula`, `brew_cask` |
 | `app_source` | `app_store`, `brew_cask`, `manual`, `unknown` |
-| `login_item_kind` | `launch_agent_user`, `launch_agent_global`, `launch_daemon`, `login_item` |
+| `login_item_kind` | `launch_agent_user`, `launch_agent_global`, `launch_daemon` (2026-11-24: BTM 로그인 항목은 공개 API 가 없어 수집하지 않음 — `login_item` 값 삭제) |
 
 `vault_asset_kind` 대응(05 문서가 탐지 규칙 확정): `.pem/.cer/.crt/.der/.p7b` → `certificate`; `.p12/.pfx` → `pkcs12`; `.key/.pkcs8` → `private_key`; `id_rsa/id_ed25519` → `ssh_private_key`; `~/.ssh/config` → `ssh_config`; `.env*` → `env_file`; AWS/GCP/Azure/Firebase → `cloud_credential`; `.p8`/`.mobileprovision`/개발자 인증서 → `apple_signing`; `.jks/.keystore/key.properties` → `android_keystore`; `.ovpn`/WireGuard → `vpn_config`; 지갑 JSON/Keystore → `crypto_wallet`; 복구 구문 의심 → `crypto_seed_suspected`; DB 접속 정보 → `db_credential`; 복구 키·백업 코드 → `recovery_codes`; NPKI `signCert.der/signPri.key` → `npki_cert`.
 
@@ -128,34 +131,39 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `detected` | `proposed` | 같은 scan 내 `intel`+`policy` 처리 완료 | `suggestion_*`, `protection`, `sensitivity`, `group_id` 설정. 제안이 없으면 `suggestion_source='none'` |
 | `detected`,`proposed` | `suppressed` | 활성 suppression 일치 | `closed_reason='suppressed'`, `suppression_id` |
 | `detected`,`proposed`,`decided` | `stale` | 대상 삭제됨/루트 밖으로 이동/식별자 변경 | `closed_reason='subject_gone'` |
+| `decided` | `decided` | `plan.create` 가 “결정 후 내용 변경”(08 §4.2 V2)으로 제외 | `last_error_code='E_STALE'`. 결재함의 “실행 대기 — 내용이 바뀜, 다시 판단 필요”로 표시. 사용자는 `decision.undo` 후 재결정 |
 | `proposed` | `proposed` | `decision.set --action defer` | decisions 행 추가, `deferred_until`(기본 다음 리뷰 날짜) |
 | `proposed` | `decided` | `decision.set` (defer 외, `allowed_actions` 안) | `decision_id`, `decided_action`, `decided_at`. `keep_always` 면 suppression 생성 |
 | `decided` | `proposed` | `decision.undo` | 현재 decision `revoked_at` 기록. `keep_always` 로 생긴 suppression 제거 |
-| `decided` | `planned` | `plan.create` (`decided_action ∈ {trash,move,archive}`) | `plan_op_id` |
-| `planned` | `decided` | `plan.cancel` / draft plan 폐기 | `plan_op_id=NULL` |
+| `decided` | `planned` | `plan.create` (`decided_action ∈ file_decision_action`) | `plan_op_id` |
+| `decided` | `decided` | `decision.set` 재결정(항목 단위, 계획 전) | 이전 decision `revoked_at`, 새 decision. `keep_always` 해제/생성 반영 |
+| `planned` | `decided` | `plan.cancel`(draft/approved, 또는 executing 의 미시도 op) | `plan_op_id=NULL` |
 | `planned` | `executed` | 해당 op `done` | `executed_at` |
 | `planned` | `failed` | 해당 op `failed` | `last_error_code` |
-| `planned` | `stale` | 해당 op `skipped`(`E_STALE`) | |
+| `planned` | `stale` | 해당 op `skipped`(`E_STALE`) | 원본이 없으면 `closed_reason='subject_gone'`, 원본은 있으나 바뀌었으면 `'subject_changed'` |
+| `planned` | `failed` | 해당 op `skipped`(`E_STALE` 외 사유: `E_PROTECTED`, `E_VOLUME_*`, `E_DEST_EXISTS` 등) | `last_error_code` |
 | `failed` | `planned` | 새 `plan.create` 에 포함 | |
 | `failed` | `proposed` | `decision.undo` | |
 | `executed` | `undone` | `plan.undo` 의 해당 op `undone` | `undone_at`. 자동으로 재질문하지 않음(결정: 사용자가 되돌렸다는 사실 자체가 판단) |
 
+실행 결과의 스냅샷 반영: executor 는 op `done` 과 같은 트랜잭션에서 `file_entries` 를 직접 갱신한다(새 경로·root·dev/inode; 루트 밖이면 `present=0, deleted_run_id=NULL`). 그래서 다음 scan 이 실행 결과를 `created`/`deleted` 이벤트나 새 항목으로 되돌려 보내지 않는다(04 §2.4 의 수집기 계약, 08 §7.5).
+
 종결 상태: `executed`(undo 전), `undone`, `stale`, `suppressed`, 그리고 `decided` 중 `decided_action ∈ {keep, keep_always, acknowledge}`.
 
-재탐지 규칙(04 문서가 세부 확정, 여기서는 불변식만): 파일 항목은 `created` 이벤트와 “다른 스캔 루트로의 `moved`” 이벤트에서만 새로 생긴다. `modified` 는 열린 항목의 스냅샷 필드만 갱신하고 종결 항목을 다시 열지 않는다. 따라서 `keep` 으로 종결된 파일은 내용이 바뀌어도 다시 묻지 않는다.
+재탐지 규칙(04 문서가 세부 확정, 여기서는 불변식만): 파일 항목은 `created` 이벤트와 “다른 스캔 루트로의 `moved`” 이벤트에서만 새로 생긴다. `modified` 는 열린 항목의 스냅샷 필드만 갱신하고 종결 항목을 다시 열지 않는다. 따라서 `keep` 으로 종결된 파일은 내용이 바뀌어도 다시 묻지 않는다. **예외 1건**: 마지막 항목이 `stale` + `closed_reason='subject_changed'`(실행 직전 내용이 바뀌어 건너뛴 것)인 엔트리는 다음 `modified`(또는 다음 scan 에서 여전히 존재하면) 새 항목을 만든다 — 사용자가 결정했던 파일이 결재함에서 조용히 사라지지 않게(08 R7).
 
-**열린 항목(`is_open=1`)**: `state ∈ {detected, proposed, planned, failed}` 또는 (`state=decided` 이고 `decided_action ∈ {trash, move, archive}`). 같은 `subject_key` 의 열린 항목은 최대 1개(부분 유니크 인덱스).
+**열린 항목(`is_open=1`)**: `state ∈ {detected, proposed, planned, failed}` 또는 (`state=decided` 이고 `decided_action ∈ {trash, move, archive, rename}`). 같은 `subject_key` 의 열린 항목은 최대 1개(부분 유니크 인덱스).
 
 ### 4.2 이월(carry-over)과 보류
 
-`review.summary --review-date D` 가 D 의 세션을 처음 열 때(트랜잭션 1개):
+`review.ensure_session(D)` 가 D 의 세션 행을 **처음 만드는 트랜잭션**에서(세션 생성 지점은 이 함수 하나 — 오늘 세션이 없으면 `scan.run` 의 review 단계 또는 `review.summary` 중 먼저 오는 쪽. 과거 날짜 세션은 새로 만들지 않는다):
 1. `is_open=1 AND state IN ('detected','proposed') AND review_date < D AND last_carried_date IS NOT D` 인 항목:
    - `deferred_until IS NULL OR deferred_until <= D` → `carry_count += 1`, `last_carried_date = D`, D 의 그룹으로 재배정.
    - `deferred_until > D` → 이월하지 않고 “보류 중” 수만 집계.
 2. `state='decided' AND is_open=1`(계획 대기) 항목은 “실행 대기” 영역에 표시(그룹 재배정 없음).
 3. 세션 지표 `stats_json` 계산.
 
-같은 날짜로 다시 열면 1단계는 일어나지 않는다(`last_carried_date` 로 멱등). `config.review.carryover=false` 면 1단계 생략(항목은 여전히 `item.list --open` 으로 조회 가능).
+세션이 이미 있으면 1단계는 일어나지 않는다(`last_carried_date` 로도 멱등). 2·3단계(지표)는 `review.summary` 마다 다시 계산. `config.review.carryover=false` 면 1단계 생략(항목은 여전히 `item.list --open` 으로 조회 가능).
 
 ### 4.3 “유지하고 다시 묻지 않기” (`keep_always`)
 
@@ -170,15 +178,15 @@ protection_rules, policy_rules(M6), file_text(M6), ai_requests(M6), audit_log, a
 | `login_item` | `path` / plist 경로 |
 
 향후 collector 가 만든 항목이 활성 suppression(`removed_at IS NULL AND (expires_at IS NULL OR expires_at > now)`)과 일치하면 `detected → suppressed` 로 곧장 간다(사용자에게 보이지 않음, 리포트에 “조용히 유지 N개” 집계).
-`path_glob`·`sha256` 매칭은 사용자가 규칙으로 명시한 경우(07 문서)만. 해제는 `suppression.remove`.
+`path`·`path_glob`·`sha256` 매칭은 사용자가 `suppression.add` 로 명시한 경우만(02 §5.3, 07 문서). `protection ∈ {security_asset, patient_data}` 항목에는 어떤 suppression 도 적용하지 않는다(보안·환자 항목은 조용히 숨기지 않음). 해제는 `suppression.remove`.
 
 ### 4.4 계획 (`plans.state`)
 
 ```
 draft ──plan.approve──▶ approved ──plan.apply──▶ executing ──▶ completed
   │                        │                        ├────────▶ partial   (일부 op failed/skipped)
-  │                        │                        └────────▶ failed    (done 0개)
-  └──plan.cancel──▶ cancelled ◀──plan.cancel──┘
+  │                        │                        ├────────▶ failed    (done 0개)
+  └──plan.cancel──▶ cancelled ◀──plan.cancel──┘    └─plan.cancel(running 0개)─▶ cancelled | partial | failed
 completed|partial ──plan.undo(전체)──▶ undone
 completed|partial ──plan.undo(일부 또는 일부 실패)──▶ partially_undone ──plan.undo──▶ undone
 ```
@@ -186,9 +194,10 @@ completed|partial ──plan.undo(일부 또는 일부 실패)──▶ partiall
 | from | to | 조건 |
 |---|---|---|
 | `draft` | `approved` | approval 행 생성, `approvals.plan_hash == plans.plan_hash` |
-| `draft`,`approved` | `cancelled` | `plan.cancel`. 항목 `planned → decided` |
+| `draft`,`approved` | `cancelled` | `plan.cancel`. 모든 연산 `pending → skipped`(`E_CANCELLED`), 항목 `planned → decided` (08 §7.10) |
 | `approved` | `executing` | `plan.apply` 시작(잠금 보유) |
-| `executing` | `completed` / `partial` / `failed` | 모든 op 가 `done` / 혼합 / `done` 0개 |
+| `executing` | `completed` / `partial` / `failed` | 모든 op 가 `done` / 혼합 / 시도했으나 `done` 0개 |
+| `executing` | `cancelled` / `partial` / `failed` | `plan.cancel`, `running` op 0개일 때만(08 §7.10). 남은 `pending` op → `skipped`(`E_CANCELLED`), 그 항목은 `planned → decided`. 결과: `done`=0·`failed`=0 → `cancelled`, `done`=0·`failed`>0 → `failed`, `done`>0 → `partial` |
 | `executing` | `executing` | 크래시 후 재시작: `plan.recover` 가 op 정합화 후 남은 op 계속 또는 종료 상태 결정 |
 | `completed`,`partial`,`partially_undone` | `undone`,`partially_undone` | `plan.undo` 결과 |
 
@@ -197,12 +206,16 @@ draft 는 내용이 바뀌지 않는다(불변). 항목을 더하거나 빼려�
 ### 4.5 연산 (`plan_operations`)
 
 `op_state`: `pending → running → done | failed`, `pending → skipped`(사전조건/정책 불일치), `running → done|failed`(recover 판정).
-`undo_state`: 생성 시 `not_applicable`; `done` 이 되면 `undoable`(trash/move/archive/rename) 또는 `not_undoable`(아직 없음); undo 성공 `undone`, 실패 `undo_failed`(예: 휴지통 비워짐 → `E_UNDO_IMPOSSIBLE`).
+`undo_state`: 생성 시 `not_applicable`; `done` 이 되면 `undoable`(trash/move/archive/rename) 또는 `not_undoable`(사유는 `details_json.not_undoable_reason`, 08 §11.3); undo 시작 시 파일시스템 호출 **전에** `undoing` 커밋 → 성공 `undone`, 실패 `undo_failed`(예: 휴지통 비워짐 → `E_UNDO_IMPOSSIBLE`). 크래시로 `undoing` 이 남으면 `plan.recover` 가 실제 상태로 `undoable`/`undone` 판정(08 §10).
 
 ### 4.6 보안 자산·발견 사항
 
-`vault_assets.status`: `active`(현재 존재) ↔ `missing`(마지막 스캔에서 없음; 경로 이동이면 동일 지문으로 재연결 후 `active`), `retired`(사용자가 폐기 표시, M3 의 `vault.annotate`).
-`vault_findings.state`: `open → acknowledged`(사용자 확인) `→ resolved`(조건 해소 시 스캔이 자동 설정, 예: 권한 수정됨). `acknowledged` 도 조건 해소 시 `resolved`.
+`vault_assets.status`: `active`(현재 존재) ↔ `missing`(마지막 스캔에서 없음; 경로 이동이면 동일 지문으로 재연결 후 `active`), `retired`(사용자가 폐기 표시, `vault.annotate --status retired`; `--status active` 로 되돌림). `retired` 도 보호 대상(05 §8.2).
+`vault_findings.state`: `open → acknowledged`(사용자가 그 자산의 항목에 `acknowledge` 결정 — 열린 발견 사항 전부 확인 처리, 05 §8.3; 별도 명령 없음) `→ resolved`(조건 해소 시 스캔이 자동 설정, 예: 권한 수정됨). `acknowledged` 도 조건 해소 시 `resolved`.
+
+### 4.7 학습 규칙 (`policy_rules.state`, M6)
+
+`suggested → active`(`policy.accept`), `suggested → rejected`(`policy.reject`, `reject_cooldown_days` 동안 같은 조건 재제안 안 함), `active → disabled`(`policy.reject` 를 활성 규칙에 쓰면 비활성화), `disabled → active`(`policy.accept`). `rejected` 는 종결.
 
 ## 5. DDL
 
@@ -215,7 +228,11 @@ CREATE TABLE app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
--- 예: ('device_id','dev_5f2c9a1e'), ('created_at','1764000000000'), ('contract_version','1')
+-- 키 목록(값은 TEXT): device_id, created_at, contract_version, last_compaction_date, last_devcache_scan_date,
+--   last_brew_scan_date, last_login_items_scan_date, last_app_lastused_refresh_date (04 §14a),
+--   vault.backlog_entry_ids (JSON 배열, 05 §2.4),
+--   host_uuid_sha256 (SHA-256("dayclose.host.v1"+gethostuuid()), 원 UUID 저장 금지, 08 §7.11),
+--   approval.app_pubkey_spki_b64, approval.app_pubkey_registered_at (core.app_key, 08 §6.5). 새 키는 이 목록에 먼저 추가.
 
 CREATE TABLE schema_migrations (
   version    INTEGER PRIMARY KEY,
@@ -230,7 +247,10 @@ CREATE TABLE scan_roots (
   kind        TEXT NOT NULL CHECK (kind IN ('downloads','desktop','screenshots','documents','icloud_drive','projects','vault_extra','custom')),
   enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
   max_depth   INTEGER,                 -- NULL = 무제한. projects 기본 2 (저장소 탐지용)
-  file_level  INTEGER NOT NULL DEFAULT 1 CHECK (file_level IN (0,1)), -- 0 = 파일 단위 항목 생성 안 함 (projects)
+  file_level  INTEGER NOT NULL DEFAULT 1 CHECK (file_level IN (0,1)), -- 0 = 파일 단위 항목 생성 안 함 (projects, DerivedData)
+  icloud_synced_mode TEXT NOT NULL DEFAULT 'auto' CHECK (icloud_synced_mode IN ('auto','yes','no')), -- 사용자 지정(root add/set --icloud-synced)
+  icloud_synced INTEGER NOT NULL DEFAULT 0 CHECK (icloud_synced IN (0,1)), -- 실효값(02 §10.1 예외 2). yes→1, no→0, auto→04 §1 판정; auto 인데 판정 신호가 없으면 desktop/documents 루트는 1(안전 쪽, 09 §12 V17). scan 마다 재계산. 정책 판단에 쓰는 값은 이 값 OR 양성 실시간 신호(02 §10.1 예외 2, 08 §9.2) — 사용자 'no' 는 양성 신호를 이기지 못함
+  icloud_synced_source TEXT NOT NULL DEFAULT 'detected' CHECK (icloud_synced_source IN ('detected','user','assumed')), -- 실효값의 근거
   created_at  INTEGER NOT NULL,
   removed_at  INTEGER
 ) STRICT;
@@ -243,7 +263,7 @@ CREATE TABLE scan_runs (
   status       TEXT NOT NULL CHECK (status IN ('running','completed','partial','failed','interrupted')),
   trigger      TEXT NOT NULL CHECK (trigger IN ('init','manual','app','schedule','agent')),
   collectors_json TEXT NOT NULL CHECK (json_valid(collectors_json)),  -- ["fs","git",...]
-  stats_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats_json)),
+  stats_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats_json)),  -- 키: 04 §0 통계 + warning_codes(그 run 의 경고 코드 배열)
   error_code   TEXT,
   request_id   TEXT
 ) STRICT;
@@ -343,17 +363,17 @@ CREATE TABLE review_sessions (
   stats_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats_json))
   -- stats_json 키: new_files, modified_files, deleted_files, new_apps, new_packages,
   --   items_total, items_open, items_decided, carried_over, deferred, pending_plan_bytes,
-  --   trash_planned, suppressed_today, vault_new, vault_findings_open
+  --   trash_planned, suppressed_today, vault_new, vault_findings_open, estimated_review_minutes(FR-DR-001 공식)
 ) STRICT;
 
 CREATE TABLE review_groups (
   id               INTEGER PRIMARY KEY,
   session_id       INTEGER NOT NULL REFERENCES review_sessions(id),
   group_key        TEXT NOT NULL,      -- 04 문서 규칙. 예 'installer:installed', 'screenshot:day', 'project:3', 'duplicate:<sha256 앞 16자>', 'vault:new'
-  category         TEXT NOT NULL CHECK (category IN ('screenshot','image','document','installer','compressed','media','code','folder','misc','dev_cache','security_asset','app','package','git_repo','login_item')),
+  category         TEXT CHECK (category IS NULL OR category IN ('screenshot','image','document','installer','compressed','media','code','folder','misc','dev_cache','security_asset','app','package','git_repo','login_item')),  -- NULL = 혼합 그룹(project:, ai:, habit: 등 — 04/07)
   title            TEXT NOT NULL,      -- 사용자 표시 문구. 비밀/환자 정보 금지
   rationale        TEXT,
-  suggested_action TEXT CHECK (suggested_action IN ('keep','keep_always','trash','move','archive','defer','acknowledge')),
+  suggested_action TEXT CHECK (suggested_action IN ('keep','keep_always','trash','move','archive','rename','defer','acknowledge')),
   suggested_dest   TEXT,
   suggestion_source TEXT NOT NULL DEFAULT 'none' CHECK (suggestion_source IN ('none','heuristic','rule','ai')),
   sort_order       INTEGER NOT NULL DEFAULT 0,
@@ -377,7 +397,7 @@ CREATE TABLE review_items (
   state              TEXT NOT NULL CHECK (state IN ('detected','proposed','decided','planned','executed','undone','failed','stale','suppressed')),
   protection         TEXT NOT NULL DEFAULT 'none' CHECK (protection IN ('none','user_rule','system','active_repo','patient_data','security_asset')),
   sensitivity        TEXT NOT NULL DEFAULT 'normal' CHECK (sensitivity IN ('normal','personal','patient','secret')),
-  suggested_action   TEXT CHECK (suggested_action IN ('keep','keep_always','trash','move','archive','defer','acknowledge')),
+  suggested_action   TEXT CHECK (suggested_action IN ('keep','keep_always','trash','move','archive','rename','defer','acknowledge')),
   suggested_dest     TEXT,
   suggestion_source  TEXT NOT NULL DEFAULT 'none' CHECK (suggestion_source IN ('none','heuristic','rule','ai')),
   suggestion_reason  TEXT,             -- 사용자 표시 문구. 비밀/환자 정보 금지
@@ -388,10 +408,10 @@ CREATE TABLE review_items (
   carry_count        INTEGER NOT NULL DEFAULT 0,
   deferred_until     TEXT,             -- 'YYYY-MM-DD'
   decision_id        INTEGER,          -- 현재 유효 결정 (decisions.id)
-  decided_action     TEXT CHECK (decided_action IN ('keep','keep_always','trash','move','archive','defer','acknowledge')),
+  decided_action     TEXT CHECK (decided_action IN ('keep','keep_always','trash','move','archive','rename','defer','acknowledge')),
   plan_op_id         INTEGER,          -- 0004 plan_operations.id
   suppression_id     INTEGER,
-  closed_reason      TEXT CHECK (closed_reason IN ('suppressed','subject_gone','executed','undone')),
+  closed_reason      TEXT CHECK (closed_reason IN ('suppressed','subject_gone','subject_changed','executed','undone')),
   last_error_code    TEXT,
   first_detected_run_id INTEGER NOT NULL REFERENCES scan_runs(id),
   last_detected_run_id  INTEGER NOT NULL REFERENCES scan_runs(id),
@@ -403,7 +423,7 @@ CREATE TABLE review_items (
   state_changed_at   INTEGER NOT NULL,
   is_open            INTEGER GENERATED ALWAYS AS (
                        CASE WHEN state IN ('detected','proposed','planned','failed') THEN 1
-                            WHEN state = 'decided' AND decided_action IN ('trash','move','archive') THEN 1
+                            WHEN state = 'decided' AND decided_action IN ('trash','move','archive','rename') THEN 1
                             ELSE 0 END) STORED,
   CHECK (state <> 'decided' OR decided_action IS NOT NULL),
   CHECK (decided_action IS NULL OR decided_action <> 'defer')   -- defer 는 상태를 바꾸지 않음
@@ -418,7 +438,7 @@ CREATE INDEX ix_review_items_category ON review_items(category, state);
 CREATE TABLE decisions (
   id           INTEGER PRIMARY KEY,
   item_id      INTEGER NOT NULL REFERENCES review_items(id),
-  action       TEXT NOT NULL CHECK (action IN ('keep','keep_always','trash','move','archive','defer','acknowledge')),
+  action       TEXT NOT NULL CHECK (action IN ('keep','keep_always','trash','move','archive','rename','defer','acknowledge')),
   dest_path    TEXT,                   -- move 필수. archive 는 NULL (plan.create 가 config archive.root 기준으로 목적지 결정)
   defer_until  TEXT,
   note_enc     BLOB,                   -- 사용자 메모 (암호화, §6)
@@ -430,7 +450,7 @@ CREATE TABLE decisions (
   request_id   TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
   revoked_at   INTEGER,
-  CHECK (action <> 'move' OR dest_path IS NOT NULL),
+  CHECK (action NOT IN ('move','rename') OR dest_path IS NOT NULL),  -- rename: 같은 디렉터리의 새 전체 경로
   CHECK (action <> 'defer' OR defer_until IS NOT NULL)
 ) STRICT;
 CREATE INDEX ix_decisions_item ON decisions(item_id, created_at);
@@ -479,12 +499,12 @@ CREATE TABLE vault_assets (
   detect_methods_json TEXT NOT NULL CHECK (json_valid(detect_methods_json)), -- ["extension","magic",...]
   confidence         REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
   masked_name        TEXT NOT NULL,    -- 표시용 마스킹 이름 (05 문서 규칙)
-  fingerprint_sha256 TEXT,             -- 파일 SHA-256. crypto_seed_suspected 는 항상 NULL
+  fingerprint_sha256 TEXT,             -- 파일 내용의 **키 입력 HMAC-SHA256** hex(05 §7.1, 필드 키에서 파생). 평문 SHA-256 아님. seed/recovery_codes 는 NULL
   key_fingerprint    TEXT,             -- 공개키 SHA-256 지문 (인증서·키 쌍 연결/중복 판정)
   cert_subject_enc   BLOB,             -- 인증서 subject (실명 포함 가능 → 암호화)
   cert_issuer        TEXT,
-  cert_not_before    INTEGER,
-  cert_not_after     INTEGER,
+  cert_not_before    INTEGER,          -- epoch ms
+  cert_not_after     INTEGER,          -- epoch ms
   expiry_source      TEXT NOT NULL DEFAULT 'unknown' CHECK (expiry_source IN ('file','user','unknown')),
   needs_password     INTEGER NOT NULL DEFAULT 0 CHECK (needs_password IN (0,1)), -- 암호 걸린 p12 등: 메타데이터 미확인
   permissions_mode   INTEGER,
@@ -499,7 +519,8 @@ CREATE TABLE vault_assets (
   user_expires_on    TEXT,             -- 'YYYY-MM-DD' (파일로 알 수 없는 API 키 만료일)
   first_seen_run_id  INTEGER NOT NULL REFERENCES scan_runs(id),
   last_seen_run_id   INTEGER NOT NULL REFERENCES scan_runs(id),
-  updated_at         INTEGER NOT NULL
+  updated_at         INTEGER NOT NULL,
+  CHECK (kind NOT IN ('crypto_seed_suspected','recovery_codes') OR (fingerprint_sha256 IS NULL AND key_fingerprint IS NULL AND cert_subject_enc IS NULL))  -- 복구 수단은 파생값 0 (FR-SV-008)
 ) STRICT;
 CREATE UNIQUE INDEX ux_vault_assets_entry ON vault_assets(entry_id) WHERE entry_id IS NOT NULL AND status <> 'retired';
 CREATE INDEX ix_vault_assets_kind ON vault_assets(kind, status);
@@ -558,7 +579,7 @@ CREATE TABLE inventory_packages (
 
 CREATE TABLE inventory_login_items (
   id            INTEGER PRIMARY KEY,
-  kind          TEXT NOT NULL CHECK (kind IN ('launch_agent_user','launch_agent_global','launch_daemon','login_item')),
+  kind          TEXT NOT NULL CHECK (kind IN ('launch_agent_user','launch_agent_global','launch_daemon')),
   label         TEXT NOT NULL,
   plist_path    TEXT,
   program_path  TEXT,
@@ -586,7 +607,7 @@ CREATE TABLE plans (
   started_at     INTEGER,
   finished_at    INTEGER,
   undone_at      INTEGER,
-  summary_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(summary_json)) -- {"trash":12,"move":3,"bytes_by_op":{...}}
+  summary_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(summary_json)) -- 집계만: {"trash":12,"move":3,"bytes_by_op":{...},"excluded":{...},"patient_count":0}. 연산별 값은 plan_operations 컬럼에
 ) STRICT;
 CREATE INDEX ix_plans_state ON plans(state, created_at);
 
@@ -602,16 +623,24 @@ CREATE TABLE plan_operations (
   pre_inode      INTEGER NOT NULL,
   pre_size       INTEGER NOT NULL,
   pre_mtime_ns   INTEGER NOT NULL,
-  pre_sha256     TEXT,                 -- 볼륨 간 이동/보관 시 필수
+  pre_sha256     TEXT,                 -- 볼륨 간 이동/보관 시 필수 (디렉터리는 매니페스트 해시, 08 §4.6)
+  src_kind       TEXT NOT NULL CHECK (src_kind IN ('file','dir','symlink','package')),
+  create_dirs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(create_dirs_json)), -- 이 연산 전에 만들 디렉터리 절대경로(순서대로). 계획과 함께 불변, plan_hash 에 포함
   state          TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','done','failed','skipped')),
   error_code     TEXT,
   actual_dst_path TEXT,
+  post_dev       INTEGER,              -- 완료 후 목적지 객체 동일성 (undo·recover 증명)
+  post_inode     INTEGER,
+  post_mtime_ns  INTEGER,
+  details_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json)), -- 실행 결과 세부(만든 디렉터리, not_undoable_reason 등). plan_hash 에 포함하지 않음
   cross_device   INTEGER NOT NULL DEFAULT 0 CHECK (cross_device IN (0,1)),
+  icloud_propagates INTEGER NOT NULL DEFAULT 0 CHECK (icloud_propagates IN (0,1)), -- 1 = iCloud 동기화 경로의 trash(다른 기기에서도 삭제). plan_hash 정규 객체에 포함
   started_at     INTEGER,
   finished_at    INTEGER,
-  undo_state     TEXT NOT NULL DEFAULT 'not_applicable' CHECK (undo_state IN ('not_applicable','undoable','undone','undo_failed','not_undoable')),
+  undo_state     TEXT NOT NULL DEFAULT 'not_applicable' CHECK (undo_state IN ('not_applicable','undoable','undoing','undone','undo_failed','not_undoable')),
   undo_error_code TEXT,
   undone_at      INTEGER,
+  CHECK (icloud_propagates = 0 OR op = 'trash'),
   UNIQUE (plan_id, seq)
 ) STRICT;
 CREATE INDEX ix_plan_ops_plan ON plan_operations(plan_id, state);
@@ -626,6 +655,7 @@ CREATE TABLE approvals (
   channel     TEXT NOT NULL CHECK (channel IN ('cli','app','skill','mcp','schedule','test')),
   request_id  TEXT NOT NULL,
   approved_at INTEGER NOT NULL,
+  icloud_ack  INTEGER NOT NULL DEFAULT 0 CHECK (icloud_ack IN (0,1)), -- 1 = 이 승인이 icloud_propagates 연산을 가진 계획을 덮음. 보장 근거는 승인 대상 plan_hash 가 icloud_propagates 를 포함한다는 것(app_button 은 서명이 그 해시를 덮음). core 는 cli_tty·native_dialog 문구에는 경고 줄을 직접 넣지만 앱 화면은 볼 수 없다 — 앱 승인 화면의 경고 줄 표시는 03 의 계약 (02 §10.3 7)
   UNIQUE (plan_id)
 ) STRICT;
 ```
@@ -638,8 +668,8 @@ CREATE TABLE approvals (
 CREATE TABLE policy_rules (
   id             INTEGER PRIMARY KEY,
   name           TEXT NOT NULL,
-  condition_json TEXT NOT NULL CHECK (json_valid(condition_json)), -- 07 문서의 조건 DSL (예 {"category":"installer","installed":true,"origin_root_kind":"downloads"})
-  action         TEXT NOT NULL CHECK (action IN ('keep','keep_always','trash','move','archive','acknowledge')),
+  condition_json TEXT NOT NULL CHECK (json_valid(condition_json)), -- 07 문서의 조건 DSL (예 {"category":"installer","group_kind":"installer:installed","origin_root_kind":"downloads"} — 키는 07 §5.1 DSL 만)
+  action         TEXT NOT NULL CHECK (action IN ('keep','keep_always','trash','move','archive','rename','acknowledge')),
   dest_template  TEXT,
   state          TEXT NOT NULL CHECK (state IN ('suggested','active','rejected','disabled')),
   source         TEXT NOT NULL CHECK (source IN ('user','learned')),
@@ -666,7 +696,7 @@ CREATE TABLE ai_requests (
   provider      TEXT NOT NULL CHECK (provider IN ('ollama','anthropic','openai')),
   model         TEXT NOT NULL,
   external      INTEGER NOT NULL CHECK (external IN (0,1)),
-  purpose       TEXT NOT NULL,         -- 'classify_group','suggest_dest' 등 07 문서
+  purpose       TEXT NOT NULL,         -- v1 은 'classify_group' 만(07). 다른 값은 07 에 먼저 정의
   item_count    INTEGER NOT NULL,
   blocked_count INTEGER NOT NULL DEFAULT 0, -- 게이트가 제외한 항목 수
   payload_sha256 TEXT NOT NULL,        -- 본문은 저장하지 않음
@@ -688,6 +718,8 @@ CREATE INDEX ix_ai_requests_ts ON ai_requests(ts);
 | `vault_findings.rule_id/line_no` | 위치 정보만 | 평문 허용 (매치 문자열 저장 금지) |
 | `file_entries.where_from_host` | 다운로드 출처 호스트 | 평문 허용 (전체 URL·쿼리 저장 금지) |
 | 경로 컬럼 전반 | 파일 경로 | 평문 (DB 파일 0600 + FileVault 전제). 로그에는 보안/환자 항목 경로 금지 |
+
+**해시 저장 규칙**(05 §7.1, 05 R7): vault 판정이 끝나기 전에 계산한 파일 해시(예: 04 의 볼륨 간 이동 2차 매칭)는 **메모리에서만** 쓰고 `file_entries.sha256` 에 저장하지 않는다. vault 가 자산으로 판정한 엔트리의 `file_entries.sha256`·`sha256_mtime_ns` 는 같은 트랜잭션에서 NULL 로 지운다. 자산 지문은 `vault_assets.fingerprint_sha256`(HMAC)에만.
 
 **절대 저장하지 않는 것**: 비밀값·개인키 본문·토큰, 시드/복구 구문(해시 포함), gitleaks `Match`/`Secret`, AI 요청/응답 본문, 썸네일 이미지, 환자 자료 내용.
 
@@ -719,7 +751,9 @@ DB 파일 보호: `DAYCLOSE_HOME` 0700, DB·WAL 0600. `core.doctor` 가 권한�
 | 대상 | 규칙 |
 |---|---|
 | `file_events` | `detected_at` 90일 경과 삭제 |
-| `file_entries` (`present=0`) | `deleted_run_id` 의 시작 시각 180일 경과 + 열린/계획 중 항목·vault 자산이 참조하지 않으면 삭제 |
+| `file_entries` (`present=0`) | `deleted_run_id` 의 시작 시각 180일 경과 + 열린/계획 중 항목·vault 자산이 참조하지 않으면 삭제. executor 가 루트 밖으로 옮긴 행(`present=0 AND deleted_run_id IS NULL`)은 그 연산의 `finished_at`(또는 undo 시 다시 `present=1`) 기준 180일 |
+| `vault_assets` `status='missing'` | `last_seen_run_id` 의 시각 365일 경과 시 삭제(발견 사항 함께) |
+| `vault_findings` `state='resolved'` | `resolved_at` 180일 경과 시 삭제 |
 | `review_items` 종결 상태 | 180일 경과 시 유지(결정 이력이 학습 근거). 단 `subject_path` 외 세부(suggestion_reason) NULL 처리 |
 | `scan_runs` | 365일 경과 + 참조 없음 → 삭제 |
 | `audit_log` | 365일 |
@@ -764,3 +798,4 @@ SELECT * FROM plan_operations WHERE state = 'running';
 - `policy_rules.condition_json` DSL, 학습 임계값 → 07.
 - `plan_hash` 정규화, 휴지통 경로, recover 판정표 → 08.
 - 각 명령의 `data` 가 이 테이블들을 어떻게 투영하는지 → 10.
+- 제안 설명 신호(07 §6)는 저장 컬럼이 없다 — `item.show` 가 현재 데이터로 재계산한다(결정: 저장하면 낡은 설명이 남는다).

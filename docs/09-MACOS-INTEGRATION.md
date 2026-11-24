@@ -121,7 +121,7 @@ AGENTS §3-2, 12 M4 종료 기준. `scripts/check-swift-no-mutation.sh` (11 문�
 | 순위 | 후보 | 비고 |
 |---|---|---|
 | 1 | 실행 인자 `--core PATH` | |
-| 2 | 앱 설정 `core.command` (`UserDefaults`, 설정 > 고급) | 결정: 02 §4 의 “설정 `core.command`” 는 **앱 쪽 UserDefaults 키**로 둔다. 이유: core 를 찾기 전에는 `config.toml` 을 읽을 수 없음(닭과 달걀). §13 G1 |
+| 2 | 앱 설정 `core.command` (`UserDefaults`, 설정 > 고급) | 결정: 02 §4 의 “설정 `core.command`” 는 **앱 쪽 UserDefaults 키**로 둔다. 이유: core 를 찾기 전에는 `config.toml` 을 읽을 수 없음(닭과 달걀). 02 §9 에 반영됨(core 는 이 값을 모름) |
 | 3 | `DayClose.app/Contents/Resources/core/bin/dayclose` | 안 B 채택 시에만 존재 |
 | 4 | `~/.local/bin/dayclose` | 안 A 기본 |
 | 5 | `/opt/homebrew/bin/dayclose`, `/usr/local/bin/dayclose` | |
@@ -142,11 +142,11 @@ AGENTS §3-2, 12 M4 종료 기준. `scripts/check-swift-no-mutation.sh` (11 문�
 | `PYTHONDONTWRITEBYTECODE` | `1` |
 | `DAYCLOSE_HOME` | `--home` 지정 시에만 |
 | `DAYCLOSE_SANDBOX` | `--sandbox` 지정 시에만(Debug) |
-| `DAYCLOSE_NATIVE` | `DayClose.app/Contents/Helpers/dayclose-native` 가 있으면 그 절대경로(M6) — §13 G2 |
+| `DAYCLOSE_NATIVE` | `DayClose.app/Contents/Helpers/dayclose-native` 가 있으면 그 절대경로(M6). 02 §15.1 공유 환경변수 |
 
 ### 3.4 `dayclose-native` 탐색 (core 쪽, M6)
 
-core 는 `DAYCLOSE_NATIVE` → `/Applications/DayClose.app/Contents/Helpers/dayclose-native` → `~/.local/bin/dayclose-native` 순으로 찾는다. 없으면 OCR 단계 건너뜀 + `W_TOOL_MISSING`. 앱 번들 안의 사본을 쓰는 이유: core 가 앱의 자식일 때 TCC 책임 프로세스가 앱으로 유지되고(§7.1), 같은 인증서로 서명되어 있음. `DAYCLOSE_NATIVE` 는 02 §15.1 경로 목록에 없는 새 이름 → §13 G2.
+core 는 `DAYCLOSE_NATIVE` → `/Applications/DayClose.app/Contents/Helpers/dayclose-native` → `~/.local/bin/dayclose-native` 순으로 찾는다. 없으면 OCR 단계 건너뜀 + `W_TOOL_MISSING`. 앱 번들 안의 사본을 쓰는 이유: core 가 앱의 자식일 때 TCC 책임 프로세스가 앱으로 유지되고(§7.1), 같은 인증서로 서명되어 있음. 예약 실행에서는 스케줄러 헬퍼가 같은 값을 core 자식 환경에 넣는다(§8.3).
 
 ## 4. 앱 ↔ core 프로세스 수명관리 (`DayCloseKit.CoreClient`)
 
@@ -184,6 +184,8 @@ public enum CoreClientError: Error, Sendable {
 - 요청 줄: `{"id": "<단조 증가 정수 문자열>", "command": "...", "args": {...}, "channel": "app"}` + `\n` (02 §5.4). 쓰기는 actor 안에서 직렬.
 - 응답 매칭: `id` 로 `CheckedContinuation` 을 찾는다. `id` 없는 줄, 모르는 `id` → 디버그 로그 후 무시.
 - 진행 이벤트(`{"id": "...", "event": "progress", ...}`) → 해당 요청의 `progress` 콜백(MainActor 로 hop 은 호출 측 책임).
+- 취소: `CoreClient.cancel(requestID:)` 가 제어 줄 `{"control": "cancel", "target": "<id>"}` 를 보낸다(10 문서). 대기 중 요청은 즉시, 진행 중 `scan.run`·`ai.classify` 는 다음 루트·배치 경계에서 끝나고 원래 요청 `id` 로 응답이 온다(앱은 그 응답을 기다려 continuation 을 끝낸다 — 로컬에서 먼저 끊지 않음). 취소된 요청의 응답은 `ok=false`, `error.code = "E_CANCELLED"`(02 §5.5, CLI 종료 코드 130). `plan.apply/undo/recover` 에는 취소 요청이 없다(02 §5.5) — 실행 중 멈추기는 아래 `interrupt()`.
+- 실행 중 멈추기: `CoreClient.interrupt()` = core 자식 프로세스에 `SIGINT`(`kill(pid, SIGINT)`). stdio 채널은 apply 응답을 기다리는 중이라 쓰지 않는다(08 §7.6.2). serve 는 진행 중 요청의 중단 플래그만 세우고 세션을 유지하며, `plan.apply` 응답은 `E_PARTIAL` + `data.resumable = true`. 진행 중 요청이 `plan.apply/undo/recover` 일 때만 호출 가능(그 외에는 no-op). 앱 화면은 03 §4.7 [중지].
 - 동시 요청: 여러 개를 보낼 수 있다(파이프라이닝). core 가 순차 처리하더라도 앱은 응답 순서를 가정하지 않는다. 같은 항목에 대한 결정 직렬화는 03 §3.4 의 `ReviewStore` 책임.
 
 명령별 타임아웃(결정):
@@ -213,7 +215,7 @@ core 의 stderr 는 줄 단위로 `os.Logger(subsystem: "com.dayclose.app", cate
 
 - 앱 종료(`applicationShouldTerminate`): 실행 중 요청이 `plan.apply/undo/recover` 면 `.terminateLater` + 대화상자 “정리 작업이 끝날 때까지 기다립니다(6/9)” [기다리기] [강제 종료](강제 종료 시 다음 실행에서 `plan.recover`, 08). 그 외에는 stdin 닫기(EOF) → 2s 대기 → `SIGTERM` → 2s → `SIGKILL`.
 - 결정: 메인 창이 모두 닫히고 메뉴바만 남은 상태에서 **10분간 요청이 없으면 core 를 종료**하고, 다음 요청 때 다시 띄운다. 이유: 메뉴바 상주 중 Python 프로세스를 계속 유지할 필요가 없음. 02 §7 의 “창이 열린 동안” 보다 넓지 않으므로 충돌 없음(창이 열린 동안은 항상 유지).
-- 앱이 충돌하면 stdin EOF 로 core 가 종료된다(02 §4). EOF 시 core 가 진행 중 요청을 끝내고 나가는지(특히 `plan.apply`)는 10 문서가 정한다 — 앱은 다음 기동 때 `plan.recover` 배너로 대응.
+- 앱이 충돌하면 stdin EOF 로 core 가 종료된다(02 §4). 10 문서 확정: EOF 시 serve 는 진행 중 `plan.apply` 를 끝낸 뒤 나간다. 따라서 정상 종료 경로의 “stdin 닫기 → 2s → SIGTERM” 은 `plan.apply/undo/recover` 가 진행 중이 아닐 때만 쓰고(위 대화상자가 막음), 앱 충돌 시에는 core 가 스스로 마무리한다. 그래도 core 가 강제 종료된 경우를 위해 다음 기동 때 `plan.recover` 배너(03 §4.12)는 유지.
 
 ## 5. 미리보기·썸네일·OCR·동영상
 
@@ -286,6 +288,8 @@ canTouchContent(item):
 - 처리: Swift Vision `RecognizeTextRequest`(macOS 15+, SDK `.swiftinterface` 확인) — `recognitionLevel = .accurate`, `recognitionLanguages = [Locale.Language(identifier: "ko-KR"), Locale.Language(identifier: "en-US")]`, `usesLanguageCorrection = true`. 파일마다 `lstat` 으로 dataless 재검사(dataless → 건너뜀). 파일당 10초, 최대 이미지 변 4096px 로 다운샘플(ImageIO).
 - 출력: stdout 에 `{"results": [{"index": 0, "ok": true, "text": "…", "lang": "ko"}, {"index": 1, "ok": false, "error": "dataless"}]}` — 경로를 되풀이하지 않고 입력 `index` 로 대응. 텍스트는 `max_chars` 에서 자름.
 - 금지: 디스크 쓰기(임시 파일 포함), 로그에 텍스트 출력, 네트워크. 종료 코드 0(부분 실패는 `ok:false`), 2(입력 오류).
+
+`dayclose-native confirm`(M7 “승인 강화”, PRD C12): core 가 `native_dialog` 대신 호출하는 확인 서브명령. stdin 으로 `{"reason": "<요약 문구>"}` 를 받아 `LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason:)` 를 실행하고 `{"ok": true|false, "error": "user_cancel"|"not_available"|…}` 를 stdout 으로. 요약 문구에 iCloud 전파 줄(02 §10.3 7)이 들어간다. GUI 세션이 없으면 `not_available` → core 는 기존 규칙대로 거부. 세부 계약은 08 §6.4.
 - 한국어 인식 지원 여부: `RecognizeTextRequest.supportedRecognitionLanguages` 로 시작 시 확인, 없으면 `{"error": "language_unsupported"}`(확인 필요 §12 V12).
 
 ## 6. 썸네일 캐시 규칙 (비밀이 캐시에 남지 않게)
@@ -334,7 +338,7 @@ canTouchContent(item):
 | 맥락 | 누가 | 방법 |
 |---|---|---|
 | 앱 | `PermissionMonitor`(Swift) | 아래 프로브를 전용 스레드에서 실행, 2초 제한 |
-| core(앱의 자식) | `core.doctor` (channel `app`) | core 의 같은 프로브(10 문서가 `doctor` 출력 필드 확정 → §13 G3) |
+| core(앱의 자식) | `core.doctor` (channel `app`) | core 의 같은 프로브 → `process.full_disk_access`, 루트별 `access`, `archive_root.access`(10 문서 확정) |
 | 예약 실행 | `DayCloseScheduler` 가 `dayclose doctor --channel schedule --json` 실행 후 결과 요약 저장(§8.5) | 하루 1회 + 스캔 경고에 `W_TCC_DENIED`/`W_ROOT_UNAVAILABLE` 이 있을 때 |
 
 프로브(읽기 전용, 내용을 읽지 않음):
@@ -581,9 +585,9 @@ DayClose 자신의 `com.dayclose.scheduler` 는 앱 번들 안 plist 로 등록�
 
 ### 10.6 iCloud Drive
 
-- 루트: `~/Library/Mobile Documents/com~apple~CloudDocs`(`icloud_drive`, 02 §10.6). “데스크탑 및 문서” 동기화가 켜져 있으면 `~/Desktop`·`~/Documents` 도 iCloud 경로가 될 수 있음 → 루트 중첩 처리는 02 §10.6·04.
+- 루트: `~/Library/Mobile Documents/com~apple~CloudDocs`(`icloud_drive`, 02 §10.6). “데스크탑 및 문서” 동기화가 켜져 있으면 `~/Desktop`·`~/Documents` 도 iCloud 동기화 경로 → core 가 루트 단위로 `scan_roots.icloud_synced = 1` 로 판정하고 그 항목의 파일 동작을 막는다(`blocked_reasons = icloud_synced`, 02 §10.1 예외 2). 판정 신호를 실기기로 확인하는 것이 §12 V17. 루트 중첩 처리는 02 §10.6·04.
 - 앱의 규칙: dataless 는 썸네일·QL·ImageIO·PDFKit·AVFoundation·`contentsOfDirectory` 모두 호출 금지(이들은 내용을 읽어 다운로드를 일으킴). §5.0 검사.
-- `trash/move/archive` 는 `allowed_actions` 에서 빠진다(02 §10.1 예외 2) — 앱은 그대로 따른다.
+- 허용 동작(02 §10.1 예외 2, PRD C11): dataless 는 파일 동작 전부 불가. 다운로드된 iCloud 동기화 파일은 `move/archive/rename` 불가, `trash` 는 해제 게이트(`TRASH_UNLOCK_VERIFIED` + `icloud.allow_trash`) 후 항목 단위로만. 앱은 `allowed_actions`·`icloud_synced` 를 그대로 따르고 “다른 기기에서도 삭제됨” 을 표시(03 §5.3). 게이트를 여는 근거가 §12 V18~V21.
 - TCC: iCloud Drive 접근도 `EPERM` 이면 `W_TCC_DENIED`(02 §10.6). FDA 가 iCloud Drive 를 포함하는지 확인 필요(§12 V7).
 
 ### 10.7 휴지통 의미 (실행은 08 문서 · executor)
@@ -598,7 +602,7 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 | executor 가 rename 으로 넣은 항목에는 Finder 의 “되돌려 놓기” 가 동작하지 않을 수 있음(Finder 전용 메타데이터) | 앱 문구는 “DayClose 기록에서 되돌리기” 로 통일(03 §4.6) | 확인 필요 V8 |
 | 네트워크 볼륨(SMB 등)·읽기 전용 볼륨에는 휴지통이 없을 수 있음 | 08 은 이런 볼륨의 `trash` 를 계획 단계에서 거부하도록 정할 것 | 08 결정 사항 |
 | 사용자가 휴지통을 비우면 되돌릴 수 없음 | `E_UNDO_IMPOSSIBLE`(02 §11), 앱 문구 03 §4.7 | — |
-| iCloud Drive 항목의 휴지통 이동은 다른 기기 삭제로 전파 | 02 §10.1 예외 2 로 차단됨 | — |
+| iCloud 동기화 파일의 휴지통 이동은 다른 기기 삭제로 전파 | 해제 전에는 차단, 해제 후 항목 단위 + 승인 화면의 전파 줄 + `approvals.icloud_ack`(02 §10.3 7). executor 는 08 §9 | V18~V21 |
 
 ## 11. 샌드박스·엔타이틀먼트·서명·보안
 
@@ -618,21 +622,22 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 - Time Sensitive 알림·푸시 엔타이틀먼트 없음(§8.4).
 - §11.3 제안을 채택하면 Secure Enclave 키 저장을 위한 키체인 접근 그룹 엔타이틀먼트가 필요할 수 있음(확인 필요).
 
-### 11.3 앱 승인(`app_button`) 보강 제안 — 08 문서가 결정
+### 11.3 앱 승인(`app_button`) — Secure Enclave 서명 (08 §6.5 채택, M7 “승인 강화”)
 
-문제: `plan.approve` 의 `method=app_button` 은 “앱의 승인 버튼을 사람이 눌렀다” 는 뜻이지만, 같은 사용자 권한의 어떤 프로세스(에이전트 포함)든 `dayclose serve --stdio --channel app` 을 직접 띄워 승인 요청을 보낼 수 있다. core 는 요청이 진짜 DayClose.app 에서 왔는지 알 수 없다 → 02 §10.3 “사람만 승인” 의 앱 경로가 구조적으로 보장되지 않는다(§13 G4).
+문제: `plan.approve` 의 `method=app_button` 은 “앱의 승인 버튼을 사람이 눌렀다” 는 뜻이지만, 같은 사용자 권한의 어떤 프로세스(에이전트 포함)든 `dayclose serve --stdio --channel app` 을 직접 띄워 승인 요청을 보낼 수 있다. core 는 요청이 진짜 DayClose.app 에서 왔는지 알 수 없다 → 02 §10.3 “사람만 승인” 의 앱 경로가 구조적으로 보장되지 않는다. 08 §6.5 가 아래 방식을 채택했다(서명 대상 `b"dayclose.approve.v1\n" + device_id + "\n" + plan_id + "\n" + plan_hash`, nonce 없음 — 정확한 형식은 08). 구현은 12 의 M7 “승인 강화” 명시 항목이며, 가능 여부는 V11(M5) 결과로 결정한다. 그 전까지의 기본 동작: 앱은 서명 없이 `plan.approve` 를 보내고 core 가 `native_dialog` 를 띄운다(저하 모드). 앱의 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` 확인은 UI 실수 방지일 뿐 core 쪽 보장이 아니다(03 §4.6).
 
-제안(채택 여부·세부는 08):
-1. 온보딩에서 앱이 CryptoKit `SecureEnclave.P256.Signing.PrivateKey` 를 만들고, 접근 제어는 `SecAccessControlCreateWithFlags(…, [.privateKeyUsage, .userPresence])`(Touch ID 또는 로그인 암호, `kSecAccessControlUserPresence` SDK 확인).
-2. 공개키 등록은 사람 게이트로만: core 가 `native_dialog`(osascript) 또는 `cli_tty` 로 지문 일부를 보여주고 확인받아 DB 에 저장.
-3. 앱 승인 요청에 `signature = Sign(plan_id ‖ plan_hash ‖ nonce)` 를 붙이고, core 는 `cryptography` 로 P-256 ECDSA 검증. 서명이 없거나 틀리면 `app_button` 을 거부.
-4. 효과: 승인마다 Touch ID/암호 확인 → 사람 게이트가 앱 경로에서도 실제로 강제됨. 에이전트는 Secure Enclave 키를 쓸 수 없다.
-비용: 비샌드박스 앱의 Secure Enclave 키가 데이터 보호 키체인을 필요로 하는지, 개인 팀 서명으로 가능한지 확인 필요(§12 V11). 08 이 채택하지 않으면 최소한 앱의 [승인하고 실행] 앞에 `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` 를 두어 UI 실수 승인을 줄인다(이 경우 core 쪽 보장은 없음을 08 에 명시).
+앱 쪽 구현(프로토콜 세부는 08 §6.5 가 기준):
+1. 키 생성(온보딩 또는 설정 > 권한 [승인 키 만들기]): CryptoKit `SecureEnclave.P256.Signing.PrivateKey(accessControl:)`, 접근 제어 `SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage, .userPresence], nil)`(`kSecAccessControlUserPresence` SDK 확인). 앱은 키의 `dataRepresentation`(Secure Enclave 밖에서는 쓸 수 없는 참조)만 보관. 키는 Mac 마다 따로(02 §8.1).
+2. 공개키 등록: 사람 게이트로만 — core 가 지문 앞 8자를 `native_dialog`/`cli_tty` 로 확인받아 저장(08 §6.5-2). 명령은 `core.app_key`(`dayclose app-key register|show|revoke`, 02 §5.3 — register/revoke 는 core 가 사람 확인). 앱은 공개키(SPKI DER base64)를 serve 요청으로 보낸다.
+3. 승인: [승인하고 실행] → `plan.show` 로 해시 재확인 → 08 §6.5-3 의 메시지에 서명(여기서 Touch ID/암호 프롬프트) → `plan.approve` 인자 `app_signature`(02 §5.3, stdio 전용). 서명 실패·취소 → 요청을 보내지 않고 “승인하지 않았습니다”.
+4. core 검증 실패·키 미등록이면 core 가 다음 수단(`native_dialog`)으로 넘어간다(08 §6.5-4) — 앱은 시스템 대화상자가 뜰 수 있음을 시트에 표시(03 §4.6).
+5. 효과: 승인마다 Touch ID/암호 → 앱 경로의 사람 게이트가 core 쪽에서 검증된다. 에이전트는 Secure Enclave 키를 쓸 수 없다.
+비용·불확실성: 비샌드박스·개인 팀 서명 앱에서 Secure Enclave 키 생성에 데이터 보호 키체인·키체인 접근 그룹 엔타이틀먼트가 필요한지 확인 필요(§12 V11, M5). 불가하면 M7 승인 강화는 `native_dialog` 를 `dayclose-native confirm`(LocalAuthentication)으로 바꾸는 쪽만 진행(08 §6.4·12 M7).
 
 ### 11.4 Keychain
 
 - 필드 암호화 키(`com.dayclose.db` / `field-key-v1`)와 AI 키(`com.dayclose.ai` / `<provider>`)는 core(`keyring`)가 만들고 읽는다(02 §3, §9). 앱은 이 항목을 읽거나 쓰지 않는다.
-- 이유: macOS 파일 기반 키체인 항목은 만든 앱이 기본 신뢰 앱이 되므로, 앱이 AI 키를 만들면 Python 이 읽을 때마다 “키체인 접근 허용” 대화상자가 뜬다(확인 필요). 따라서 설정 화면의 AI 키 입력은 core 명령으로 전달해야 한다 — 그런 명령이 02 §5.3 에 없음(§13 G5, 03 §13 R9).
+- 이유: macOS 파일 기반 키체인 항목은 만든 앱이 기본 신뢰 앱이 되므로, 앱이 AI 키를 만들면 Python 이 읽을 때마다 “키체인 접근 허용” 대화상자가 뜬다(확인 필요). 따라서 설정 화면의 AI 키 입력은 core 명령으로 전달해야 한다 — 02 §5.3 의 `ai.key.set PROVIDER`(키는 stdin — 앱은 serve 요청 본문으로) / `ai.key.remove` 를 쓴다(03 §4.13.1).
 - Python 인터프리터가 키체인 항목의 신뢰 목록에 들어가는 문제(uv 가 Python 을 업데이트하면 경로가 바뀜)는 07/10 이 다룬다.
 
 ### 11.5 Gatekeeper
@@ -641,10 +646,11 @@ DayClose 에서 “휴지통” 은 executor 가 하는 **볼륨별 휴지통으
 
 ## 12. 실기기 검증 항목
 
-M4·M7 종료 전에 소유자 기기에서 수행하고 결과를 이 표의 “결과” 열과 12 문서 해당 마일스톤에 기록한다.
-**두 기기는 독립 설치**(02 §8.1)이므로 TCC·서명·예약 실행 항목(V1, V3~V6, V13~V15)은 **MacBook 과 Mac mini 각각** 수행하고 결과를 기기별로 적는다. Mac mini 는 내장 디스크가 작고 `/Volumes/External` 이 상시 연결되어 있으므로, Mac mini 의 V3·V4·V14 는 반드시 `/Volumes/External` 아래 루트(그리고 `archive.root` 를 외장으로 둔 경우 그 경로)를 등록한 상태에서 한다 — F1(멈춤)이 실제로 재현된 곳이 이 구성이다. MacBook 은 외장 없이 홈 루트 + iCloud Drive 로 수행하고, 외장을 연결할 수 있으면 V14 를 추가로.
+이 표의 항목은 **마일스톤 종료 기준**이다(12 문서): M4 = V1, V2, V3, V7, V9, V16, V17 / M5 = V8, V11, V18~V21(두 Mac 각각 — iCloud 휴지통 해제 근거) / M6 = V12 / M7 = V4, V5, V6, V10, V13, V14, V15. 해당 마일스톤 종료 전에 소유자 기기에서 수행하고 결과를 이 표의 “결과” 열과 12 문서 해당 마일스톤에 기록한다. 실패한 항목은 “실패 시” 열의 대안을 적용하고 관련 문서(02/08/03)를 먼저 고친 뒤 마일스톤을 닫는다.
+**두 기기는 독립 설치**(02 §8.1)이므로 TCC·서명·예약 실행·iCloud 항목(V1, V3~V7, V13~V15, V17~V20)은 **MacBook 과 Mac mini 각각** 수행하고 결과를 기기별로 적는다. Mac mini 는 내장 디스크가 작고 `/Volumes/External` 이 상시 연결되어 있으므로, Mac mini 의 V3·V4·V14 는 반드시 `/Volumes/External` 아래 루트(그리고 `archive.root` 를 외장으로 둔 경우 그 경로)를 등록한 상태에서 한다 — F1(멈춤)이 실제로 재현된 곳이 이 구성이다. MacBook 은 외장 없이 홈 루트 + iCloud Drive 로 수행하고, 외장을 연결할 수 있으면 V14 를 추가로.
 
 결과 기록 형식: `V3 | Mac mini | 2026-12-01 | ok | D1 ok, D2 ok, D3 ok, 외장 3.1s`. 모든 검증은 `doctor`·미리보기 같은 읽기 동작 또는 샌드박스 데이터로 한다(실제 사용자 파일 변경 없음).
+예외는 V8·V18·V19 뿐이다: 휴지통·iCloud 전파는 샌드박스로 재현할 수 없으므로 **소유자가 직접 만든 전용 시험 파일**(`~/DayCloseTest/`, iCloud Drive 의 `DayCloseTest/`)만 대상으로, 소유자가 그 Mac 앞에서 수행한다(에이전트가 대신 실행하지 않음, AGENTS §3-1). `TRASH_UNLOCK_VERIFIED` 를 `True` 로 바꾸는 변경은 V18~V21 이 **두 Mac 모두** “ok” 로 이 표에 기록된 뒤의 리뷰된 변경으로만 한다(02 §10.1 예외 2).
 
 | # | 확인할 것 | 방법 | 실패 시 | 마일스톤 | 결과 |
 |---|---|---|---|---|---|
@@ -664,18 +670,23 @@ M4·M7 종료 전에 소유자 기기에서 수행하고 결과를 이 표의 �
 | V14 | FDA 없는 상태에서 외장 루트가 있어도 예약 실행이 제한 시간 안에 경고로 끝남(NFR-REL-001) | §7.5 D4 | core 프로브·헬퍼 제한 시간 조정 | M7 | |
 | V15 | 같은 인증서 재빌드·재설치 후 `SMAppService.status` 가 `.enabled` 로 유지되는지, “백그라운드 항목 추가” 알림이 다시 뜨는지. 의도적으로 다른 인증서(또는 ad-hoc)로 서명한 시험 빌드에서 FDA·예약 실행이 어떻게 깨지는지(실패 모습을 안내 문구에 반영) | 재빌드 → `install-app.sh` → 앱 설정 > 알림·예약, 다음 tick 확인 | §7.6.1 의 재등록 배너 | M7 | |
 | V16 | 복사된 DB(다른 Mac 의 `DAYCLOSE_HOME`)로 앱을 띄우면 `W_DEVICE_MISMATCH` 배너가 뜨고 승인 버튼이 비활성인지 | `--home` 에 다른 기기 상태 사본(샌드박스 사본) 지정 | 03 §7.2 | M4 | |
+| V17 | “데스크탑 및 문서 폴더” iCloud 동기화가 켜진 Mac 에서 core 가 그것을 판정할 수 있는지(02 §10.1 예외 2 의 `scan_roots.icloud_synced`, 04 §1). 확인할 신호: `realpath(~/Desktop)`·`realpath(~/Documents)` 가 `~/Library/Mobile Documents/com~apple~CloudDocs/` 아래로 풀리는지, 두 폴더의 `(st_dev, st_ino)` 가 iCloud Drive 안 `Desktop`/`Documents` 와 같은지, `URLResourceValues.isUbiquitousItem` 값. 동기화 켬/끔 두 상태에서 각각 기록 | 시스템 설정 > Apple 계정 > iCloud > iCloud Drive 의 “데스크탑 및 문서 폴더” 를 켠 Mac 과 끈 Mac(또는 같은 Mac 의 두 상태 — 끄고 켜는 것은 소유자가 직접, 파일 이동이 생기므로 신중히)에서 `dayclose doctor --json` 의 루트별 결과 + 위 신호를 셸에서 읽기만 해 비교 | 판정 신호를 04 §1 에 확정. 어떤 신호로도 가를 수 없으면: `auto` 의 판정 불가 시 `desktop`/`documents` 루트는 동기화된 것으로 간주(`icloud_synced_source=assumed`, 02 §10.1 예외 2)를 유지하고, 사용자가 `dayclose root set ROOT_ID --icloud-synced yes|no`(명령 `root.set`, M2, MCP 비노출 — 설정 > 스캔 위치의 iCloud 선택, 03 §4.13)로 `scan_roots.icloud_synced_mode` 를 지정한다. 실효값 `icloud_synced` 는 yes→1, no→0, auto→04 판정이고, 출처는 `icloud_synced_source`(`detected`/`user`/`assumed`)로 `root.list` 에 보인다. 새 루트는 `root add … --icloud-synced auto|yes|no`(M1) | M4 | |
+| V18 | (08 §9.1-1) iCloud 동기화 파일을 `~/.Trash` 로 이름변경했을 때 (a) 다른 기기에서 삭제가 전파되는지·iCloud.com “최근 삭제된 항목” 에 남는지, (b) undo(되돌려 넣기) 후 다른 기기에 복원되는지, (c) 업로드 대기 중 파일의 결과 | **전용 시험 파일**(iCloud Drive 안 `DayCloseTest/` 에 소유자가 만든 파일)만으로, 08 §9.1 절차. 두 기기 모두 관찰 | 해제하지 않음(`TRASH_UNLOCK_VERIFIED` 유지 거짓) | M5 | |
+| V19 | (08 §9.1-2) 이름변경이 dataless 파일의 다운로드를 일으키지 않는지 | `fs_usage -w -f filesys`·네트워크 관찰, 시험 파일을 “다운로드 제거” 한 상태에서 | 〃 | M5 | |
+| V20 | (08 §9.1-3) “다운로드 완료 + 업로드 완료” 를 내용을 읽지 않고 메타데이터만으로 판정할 수 있는지(예: `URLResourceValues` 의 `ubiquitousItemDownloadingStatus`·`ubiquitousItemIsUploaded`·`ubiquitousItemIsUploading` — 키 이름 확인 필요) | 업로드 중/완료/다운로드 제거 상태별로 값 기록 | 〃 | M5 | |
+| V21 | (08 §9.1-4) 11 문서의 iCloud 모의 장애 주입 테스트가 녹색이고, V18~V20 결과와 일치하는지 | 테스트 결과 + 위 기록 대조 | 〃 | M5 | |
 
 ## 13. 기반 문서(02/06/AGENTS/12)와 다른 문서에 대한 요구
 
 | # | 대상 | 내용 |
 |---|---|---|
-| G1 | 02 §4·§9 | “설정 `core.command`” 가 `config.toml` 키인지 불명확. 이 문서는 앱 UserDefaults 키로 결정(§3.2). 02 §9 에 없다는 점을 02 에 한 줄 명시 필요 |
-| G2 | 02 §15.1 | 새 환경변수 `DAYCLOSE_NATIVE`(core 가 앱 번들 안 `dayclose-native` 를 찾는 경로) 추가 필요 |
-| G3 | 10 | `core.doctor` 출력에 `full_disk_access: granted\|denied\|unknown`, 루트별 상태(02 §10.5), 스크린샷 위치 불일치 경고, 실행 채널 |
-| G4 | 02 §10.3 / 08 | `app_button` 승인이 앱에서 왔다는 것을 core 가 검증할 수단이 없음. §11.3 제안 |
-| G5 | 02 §5.3 / 07 / 10 | AI 키를 Keychain 에 넣는 core 명령이 없음(§11.4) |
+| G1 | 02 §9 | **해소**: `core.command` 는 앱 UserDefaults 키(02 §9 명시) |
+| G2 | 02 §15.1 | **해소**: `DAYCLOSE_NATIVE` 추가됨 |
+| G3 | 10 | **해소**(10 회신): `process.full_disk_access`, `process.channel`, 루트별 `access`(iCloud 포함), `screenshots{system_location, registered}`, `archive_root{configured, access}`, `W_DEVICE_MISMATCH` + `device{db_device_id, missing_roots}`. §7.2 의 core 맥락과 스케줄러 `lastDoctor` 는 이 필드를 쓴다 |
+| G4 | 02 §10.3 / 08 / 12 | **해소**: 02 §10.3 ③ 이 Secure Enclave 서명 검증만으로 `app_button`(부모 프로세스 검사 없음), `core.app_key`·`app_signature` 가 02 §5.3 에 추가됨 |
+| G5 | 02 §5.3 | **해소**: `ai.key.set`/`ai.key.remove` |
 | G6 | AGENTS §3-2 / 12 M4 | 디스크 썸네일 캐시를 도입하면 Swift 파일 삭제 금지 검사에 캐시 디렉터리 한정 예외가 필요. M4 는 메모리 캐시만이라 현재는 불필요 |
 | G7 | 04 / 10 | ZIP 내부 목록·DMG/PKG “설치 대상” 표시용 데이터를 항목에 줄지 |
 | G8 | 04 | `login_item` 종류(BTM 로그인 항목)는 v1 에서 수집 불가 — FR-AM-004 의 범위를 LaunchAgents/Daemons plist 로 한정 |
-| G9 | 02 §7 | 스케줄러가 `scan.run` 뒤 `review.summary --channel schedule` 도 호출(알림 숫자 출처). 02 §7 표의 예약 실행 줄에 추가 필요 |
-| G10 | 10 | `serve --stdio` 가 `--channel` 전역 플래그를 받는지, stdin EOF 시 진행 중 `plan.apply` 처리 방식, 진행 중 요청 취소 수단 |
+| G9 | 02 §7 | **해소**: 02 §7 에 반영(스케줄러는 승인·실행을 하지 않으며 채널 `schedule` 의 `plan.approve`·`plan.apply` 는 core 가 거부) |
+| G10 | 10 | **해소**(10 회신): `--channel` 전역 플래그 = 요청에 채널이 없을 때의 기본값. stdin EOF 시 serve 는 비우고 종료(진행 중 `plan.apply` 는 끝낸 뒤). 취소 제어 줄 `{"control":"cancel","target":id}` — 대기 중 요청과 진행 중 `scan.run`/`ai.classify`(루트·배치 경계) 취소, `plan.apply` 는 취소 불가. §4.3·§4.6 반영 |
