@@ -1,0 +1,1 @@
+{"schema":"dayclose.v1","command":"core.version","ok":false,"data":null,"warnings":[],"error":{"code":"E_SANDBOX_VIOLATION","message":"샌드박스 설정이 올바르지 않아 시작하지 않습니다.","details":{"reason":"home_outside_sandbox"},"retryable":false},"meta":{"request_id":"<req>","core_version":"0.1.0","contract_version":1,"db_schema_version":null,"device_id":null,"duration_ms":0}}

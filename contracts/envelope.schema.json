@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dayclose.local/contracts/envelope.schema.json",
+  "title": "DayClose envelope (02 §5.4)",
+  "description": "Exactly one envelope per --json invocation on stdout. Command-independent: `data` is validated by the per-command schemas, not here.",
+  "type": "object",
+  "required": ["schema", "command", "ok", "data", "warnings", "error", "meta"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {"const": "dayclose.v1"},
+    "command": {"type": "string"},
+    "ok": {"type": "boolean"},
+    "data": true,
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message", "details"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^W_[A-Z0-9_]+$"},
+          "message": {"type": "string"},
+          "details": {"type": "object"}
+        }
+      }
+    },
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["code", "message", "details", "retryable"],
+          "properties": {
+            "code": {"type": "string", "pattern": "^E_[A-Z0-9_]+$"},
+            "message": {"type": "string"},
+            "details": {"type": "object"},
+            "retryable": {"type": "boolean"}
+          }
+        }
+      ]
+    },
+    "meta": {
+      "type": "object",
+      "required": ["request_id", "core_version", "contract_version", "db_schema_version",
+                   "device_id", "duration_ms"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "core_version": {"type": "string"},
+        "contract_version": {"type": "integer", "minimum": 1},
+        "db_schema_version": {"type": ["integer", "null"]},
+        "device_id": {"type": ["string", "null"]},
+        "duration_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"ok": {"const": true}}},
+      "then": {"properties": {"error": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"ok": {"const": false}}},
+      "then": {
+        "properties": {"error": {"type": "object"}},
+        "if": {"properties": {"error": {"properties": {"code": {"const": "E_PARTIAL"}}}}},
+        "then": {"properties": {"data": {"type": "object"}}},
+        "else": {"properties": {"data": {"type": "null"}}}
+      }
+    }
+  ]
+}

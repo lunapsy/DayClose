@@ -1,0 +1,1 @@
+{"schema":"dayclose.v1","command":"root.list","ok":false,"data":null,"warnings":[],"error":{"code":"E_NOT_INITIALIZED","message":"먼저 dayclose init 을 실행하세요.","details":{"home":"/SANDBOX/home"},"retryable":false},"meta":{"request_id":"<req>","core_version":"0.1.0","contract_version":1,"db_schema_version":null,"device_id":null,"duration_ms":0}}

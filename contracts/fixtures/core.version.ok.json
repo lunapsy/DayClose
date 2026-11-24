@@ -1,0 +1,1 @@
+{"schema":"dayclose.v1","command":"core.version","ok":true,"data":{"core_version":"0.1.0","contract_version":1,"db_schema_version":1,"db_schema_supported":1,"python":"<python>","home":"/SANDBOX/home","initialized":true},"warnings":[],"error":null,"meta":{"request_id":"<req>","core_version":"0.1.0","contract_version":1,"db_schema_version":1,"device_id":"<device>","duration_ms":0}}
