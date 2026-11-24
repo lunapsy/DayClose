@@ -255,12 +255,34 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | 테스트 | 기대 |
 |---|---|
 | `test_fr_core_008_dataless_never_opened` | 스캔·vault·review·`item.show`·`report.daily` 전체 실행 동안 감사 훅의 `open` 이벤트 중 dataless/자리표시자 경로 0건. `sha256` NULL, vault 내용 패턴·gitleaks 미실행(미끼 `.env`·`id_ed25519` 가 내용 근거로 탐지되지 않음 — 이름 기반 탐지는 05 가 허용하면 `detect_methods` 에 `content_pattern` 없음), `W_DATALESS_SKIPPED` 집계 |
-| `test_fr_core_008_icloud_allowed_actions` | `icloud_drive` 루트 항목과 다른 루트의 dataless 항목 모두 `allowed_actions == [keep, keep_always, defer]`, `blocked_reasons` 의 파일 동작 4개(`trash`,`move`,`archive`,`rename`)가 `icloud_synced`/`dataless`, `trash/move/archive` 결정 → `E_PROTECTED`, 그룹 결정은 건너뜀(`W_PROTECTED_SKIPPED`) |
+| `test_fr_core_008_icloud_allowed_actions` | 게이트 거짓(저장소 기본)에서 `icloud_drive` 루트 항목과 다른 루트의 dataless 항목 모두 `allowed_actions == [keep, keep_always, defer]`(게이트 참일 때는 §3.10), `blocked_reasons` 의 파일 동작 4개(`trash`,`move`,`archive`,`rename`)가 `icloud_synced`/`dataless`, `trash/move/archive` 결정 → `E_PROTECTED`, 그룹 결정은 건너뜀(`W_PROTECTED_SKIPPED`) |
 | `test_fr_core_008_legacy_placeholder_display_name` | `.계약서.pdf.icloud` → `display_name="계약서.pdf"`, `is_dataless=true` |
 | `test_icloud_synced_desktop_documents` | “데스크탑 및 문서” 동기화 흉내: `user/Desktop`·`user/Documents` 를 `user/Library/Mobile Documents/com~apple~CloudDocs/{Desktop,Documents}` 로 가는 심볼릭 링크로 만들고 `desktop`·`documents` 루트로 등록 → 두 루트 `icloud_synced=1`(04 §1 의 realpath 판정), 그 항목은 `keep/keep_always/defer` 만, `blocked_reasons=icloud_synced`. 동기화가 꺼진 일반 `Desktop` 디렉터리 루트는 `icloud_synced=0` |
 | `test_fr_core_008_nested_roots_no_duplicates` | iCloud 루트 안 `Desktop/` 을 `desktop` 루트로도 등록 → 같은 (dev, inode) 항목 1개, 바깥 루트 순회는 안쪽 루트 경로를 건너뜀(02 §10.6) |
 | `test_exclude_globs_relative_to_root` | `**/Library/**` 가 iCloud 루트(`~/Library/Mobile Documents/...`) 자체를 제외하지 않고, 루트 안의 `Library/` 하위만 제외(02 §9) |
 | `test_fr_core_008_app_no_thumbnail_for_dataless` (Swift UI) | dataless 항목은 아이콘만, 썸네일 생성 호출 0, Space 는 경고 후에만(03) |
+
+### 3.10 iCloud 휴지통 해제(FR-EX-008)와 루트 수동 표시
+
+게이트 = 코드 상수 `policy/icloud.py: TRASH_UNLOCK_VERIFIED`(저장소 기본 `False`) **그리고** 설정 `icloud.allow_trash`. 테스트는 상수를 픽스처 `icloud_gate(True|False)` 로 `monkeypatch` 한다(저장소 값은 바꾸지 않는다).
+
+| 테스트 | 기대 |
+|---|---|
+| `test_fr_ex_008_gate_false_blocks_trash` | 게이트 거짓(상수 `False` 또는 `allow_trash=false`): 다운로드된 iCloud 동기화 항목 `allowed_actions` 에 파일 동작 없음, `blocked_reasons` 의 `trash/move/archive/rename` 모두 `icloud_synced` |
+| `test_fr_ex_008_gate_true_allows_item_trash` | 게이트 참: 다운로드된 항목은 `trash` 허용, `move/archive/rename` 은 `icloud_synced`; dataless 항목은 `blocked_reasons.trash=dataless`(게이트와 무관) |
+| `test_fr_ex_008_group_and_rule_excluded` | 게이트 참에서 `decision set --group … --action trash` → iCloud 항목은 `skipped` + `W_PROTECTED_SKIPPED{reason:"icloud_synced"}`, 같은 그룹의 일반 항목만 결정. `actor=rule` 자동 결정(07)도 iCloud 항목에 `trash` 를 만들지 않음(제안 표시는 가능) |
+| `test_fr_ex_008_plan_marks_propagation` | 항목 지정 `trash` → 계획 연산 `icloud_propagates=true`, `summary.icloud_propagates_count=1`. 그 값만 바꾼 정규 객체는 `plan_hash` 가 다름(08 §5) |
+| `test_icloud_propagates_check_constraint` | `plan_operations` 에 `op ≠ 'trash'` 이면서 `icloud_propagates=1` 인 행 INSERT → `sqlite3.IntegrityError`(06 CHECK) |
+| `test_fr_ex_008_approval_text_and_ack` | 수단 선택·문구 단위 테스트: `cli_tty` 요약과 대화상자 인자에 별도 줄 "N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다"(N=연산 수) 포함, `test` 승인 행 `icloud_ack=1`. 그런 연산이 없으면 그 줄 없음·`icloud_ack=0` |
+| `test_fr_ex_008_icloud_ack_missing` | `icloud_propagates` 연산이 있는 계획에 `icloud_ack=0` 승인 행(감사 행 포함)을 직접 넣고 apply → `E_APPROVAL_REQUIRED{reason:"icloud_ack_missing"}`, 트리 불변(08 G9a) |
+| `test_fr_ex_008_turned_dataless_before_apply` | 승인 후 그 파일을 dataless 로 흉내(§3.9 플래그 주입) → 해당 op `skipped`, `E_PROTECTED{reason:"dataless"}`, 파일 미개방. 루트의 `icloud_synced` 가 계획 후 바뀐 경우도 08 F5 대로 `skipped` |
+| `test_icloud_gate_constant_false_without_record` | 저장소의 `TRASH_UNLOCK_VERIFIED` 가 `True` 이면 `docs/09-MACOS-INTEGRATION.md` §12 의 iCloud 휴지통 검증 행(V18~V21)이 두 기기 모두 `ok` 로 채워져 있어야 통과(08 §9.1 `test_icloud_gate_requires_verification_record` 와 같은 테스트 — 이름은 08 을 따른다). 검증 기록이 없는 지금은 상수가 `False` 여야 녹색 |
+| `test_config_allow_trash_owner_only` | `config set icloud.allow_trash false` 는 `cli`(에이전트 표식 없음)에서 성공, `--channel skill`·에이전트 표식 승격·serve `channel=mcp` 에서는 `E_PROTECTED{reason:"owner_only_key"}`. MCP 도구 목록에 `config_set` 없음 |
+| `test_root_icloud_override_precedence` | `root add --icloud-synced yes` → 신호 없어도 `icloud_synced=1`, `source=user`; `--icloud-synced no` → 감지 신호(심볼릭 링크 실제 경로가 iCloud 아래)가 있어도 0, `source=user`; `auto` → 04 판정, `source=detected` |
+| `test_root_icloud_assumed_default` | `auto` 이고 신호가 없는 `desktop`·`documents` 루트 → `icloud_synced=1`, `source=assumed`; 같은 조건의 `downloads` 루트 → 0, `detected`. `root.list` 가 루트마다 세 값을 모두 반환 |
+| `test_root_set_reevaluates_items` | `root set ROOT_ID --icloud-synced yes` → 그 루트 열린 항목의 `allowed_actions` 즉시 재계산, 새로 막힌 동작의 기존 결정 철회(`proposed`). 인자 없는 `root set` → `E_USAGE` |
+| `test_root_set_not_in_mcp` | MCP `tools/list` 에 `root_set` 없음, Skill `allowed-tools` 에 `root set` 패턴 없음 |
+| `test_archive_unencrypted_warns` | 볼륨 암호화 판정 함수를 주입(`False`/`None`)한 상태에서 `config set archive.root …`, 보관 연산이 있는 `plan.create`, `core.doctor` 가 모두 `W_ARCHIVE_UNENCRYPTED` 를 내고 차단하지 않음. `True` 면 경고 없음(PRD C14) |
 
 ## 4. 안전 불변식 — 실행 가능한 검사
 
@@ -280,10 +302,11 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | `unit/test_approval_method_selection.py` | 수단 선택 순수 함수(`plan/approval.select_method(env, tty_openable, channel, signature_ok, gui)`)의 표 전체: 에이전트 표식(`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` 등 상수 목록 각각) + TTY 가능 → `native_dialog`(TTY 수단 금지); 표식 없음 + TTY → `cli_tty`; 채널 `app` + 서명 검증 성공 → `app_button`, 서명 없음/실패 → 다음 순서(`native_dialog`); 채널 `mcp`·`schedule` → 거부; GUI 없음 → `E_APPROVAL_DENIED{reason:"no_gui"}`. 실제 대화상자·TTY 는 열지 않는다. |
 | `unit/test_native_dialog_runner.py` | 대화상자 함수에 가짜 실행기(`run_tool` 대체 callable)를 주입: 반환 `approve`/`deny`/시간 초과/무응답 → 각각 승인/`E_APPROVAL_DENIED`; 요약 텍스트가 `osascript` 의 `--` 뒤 argv 로만 전달되고 스크립트 본문에 없으며, 호출자가 준 문자열(결정 메모 등)이 없고 연산 수·`plan_hash_short` 가 있음(F31). |
 | `test_app_signature_verification` | 테스트 키쌍(`cryptography` EC P-256, 실행 시 생성)으로 `core.app_key` 등록(샌드박스 test 확인) → 올바른 서명 `"dayclose.approve.v1\n"+device_id+"\n"+plan_id+"\n"+plan_hash` 은 검증 성공, 다른 `plan_hash`·다른 `device_id`·변조 서명은 실패 → 선택 함수가 `app_button` 을 고르지 않음. |
+| `test_app_key_unregistered_or_bad_signature_degrades` | (a) 키 미등록 + `app_signature` 있음 (b) 등록 + 잘못된 서명 (c) 등록 + 서명 없음 — 모두 거부하지 않고 다음 순서로 넘어감: 선택 함수 결과 `native_dialog`(TTY 없음) 또는 `cli_tty`(표식 없음+TTY), 샌드박스 통합 테스트에서는 ② 규칙대로 `E_APPROVAL_DENIED`. `app_button` 승인 행 0개. `app-key register/revoke` 는 사람 확인 없이 성공하지 않음(test 승인 외 `E_APPROVAL_DENIED`), MCP 에 `core_app_key` 없음 |
 | `test_fake_osascript_on_path_not_executed` | `PATH` 맨 앞에 `$SANDBOX/evil/`(가짜 `osascript`·`defaults` — 실행되면 표식 파일을 씀)를 두고 `run_tool('defaults', …)` 와 승인 경로를 실행 → 표식 파일 없음. 실행된 경로는 `$SANDBOX/bin/…` 또는 `system_path` 의 절대경로뿐(호출 기록으로 확인). 단위: 샌드박스가 아닐 때 `system_path('osascript') == '/usr/bin/osascript'`(실행 없음). |
 | `test_apply_rejects_unaudited_approval` | `approvals` 행을 DB 에 직접 넣고(감사 행 없음) apply → `E_APPROVAL_REQUIRED{reason:"approval_not_audited"}`, 트리 불변(08 G5). |
 | `test_apply_rejects_expired_approval` | `DAYCLOSE_TEST_NOW` 로 승인 후 24시간+1초 → apply 와 재개 모두 `E_APPROVAL_REQUIRED{reason:"approval_expired"}`(08 G6). |
-| `test_mcp_has_no_approval_tools` | MCP `tools/list` 의 이름 집합 ∩ 02 §10.3-3 비노출 목록(`plan_approve`, `plan_apply`, `plan_undo`, `plan_recover`, `core_app_key`, `suppression_remove`, `rule_remove`, `config_set`, `vault_annotate`, `policy_accept`, `policy_reject`, `ai_classify`, `ai_key_set`, `ai_key_remove`) = ∅, 그리고 노출 목록 = 02 §5.3 전체 − 그 목록 − 전송 계층(FR-EX-002, FR-AG-003). |
+| `test_mcp_has_no_approval_tools` | MCP `tools/list` 의 이름 집합 ∩ 02 §10.3 비노출 목록(`plan_approve`, `plan_apply`, `plan_undo`, `plan_recover`, `core_app_key`, `core_init`, `config_set`, `root_add`, `root_remove`, `root_set`, `rule_add`, `rule_remove`, `suppression_add`, `suppression_remove`, `policy_accept`, `policy_reject`, `ai_key_set`, `ai_key_remove`, `ai_classify`, `vault_annotate`, `core_schema`, `core_serve`, `mcp_serve`) = ∅, 그리고 노출 목록 = 02 §5.3 전체 − 02 §10.3 비노출 목록(FR-EX-002, FR-AG-003). |
 
 ### 4.2 S2 — 보호 등급 항목은 파괴적 연산에 들어가지 않는다
 
@@ -390,7 +413,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 |---|---|
 | `unit/test_prop_plan_hash.py` | 같은 연산 집합의 입력 순서 순열 → 같은 해시. 연산의 어느 필드(src, dst, op, pre_* 4개, item_id)를 바꿔도 해시가 바뀜(FR-EX-001). 정규화 규칙은 08. |
 | `unit/test_prop_item_transitions.py` | 임의 명령 열을 항목 상태 기계에 적용 — 허용 전이 외에는 `E_INVALID_STATE`, DB CHECK 위반 없음. |
-| `unit/test_prop_agent_view.py` | 임의 Item(모든 sensitivity·protection·이름 전략) 을 `agent_view` 로 투영 — `personal`/`patient`/`secret` 의 `path` 는 null, 원래 파일 이름의 4자 이상 부분 문자열이 투영 결과 어디에도 없음(10 §1.5). |
+| `unit/test_prop_agent_view.py` | 임의 Item(모든 sensitivity·protection·이름 전략) 을 `agent_view` 로 투영 — `patient`/`secret` 의 `path`·`display_name`·`display_path` 는 null 이고 원래 파일 이름의 4자 이상 부분 문자열이 투영 결과 어디에도 없음, `normal`·`personal` 은 이름·경로 그대로(PRD C15) — 없음(10 §1.5). |
 | `unit/test_prop_pagination.py` | 임의 데이터·임의 `limit` 로 커서 순회 → 전체 집합과 같고 중복 없음. 순회 중 행 삽입해도 중복 없음. |
 | `unit/test_prop_fs_diff.py` | 임의 FS 변경 열 → `collect/fs` 이벤트가 생성/수정/삭제/이동 각각 정확히 1개(FR-CORE-003), 변경 없으면 0. |
 | `unit/test_prop_review_date.py` | 임의 시각·시간대·DST 전환 → `review_date` 가 `day_boundary` 규칙과 일치(FR-DR-002). |
@@ -562,6 +585,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 - [ ] 외장 볼륨(테스트 USB)으로 이동 도중 케이블 분리 → 원본 보존, 재연결 후 `plan recover` 정상(FR-EX-005).
 - [ ] `archive.root` 를 외장(Mac mini: `/Volumes/External/DayCloseArchive` 아래 테스트 폴더)으로 두고 테스트 파일 보관 → `<root>/<YYYY>/<MM>/` 배치, `plan undo` 로 원위치(FR-AB-001).
 - [ ] 08 의 "소유자 첫 실사용 전 체크리스트" 서명(12 M5).
+- [ ] **iCloud 휴지통 해제 검증(08 §9.1, 09 V18~V21 — MacBook·Mac mini 각각)**: 사람이 만든 테스트 파일 1개로 (1) 이 엔진의 `trash` 후 다른 기기에서 삭제 전파·iCloud.com "최근 삭제된 항목" 보존·`plan undo` 후 다른 기기 복원 (2) 이름변경이 다운로드·재업로드 외 트래픽을 만들지 않음(`fs_usage`·네트워크 관찰) (3) 업로드 미완료 파일 판정 방법 확인 (4) §3.10 모의 시나리오 녹색. 네 조건이 두 Mac 모두 `ok` 일 때만 `TRASH_UNLOCK_VERIFIED=True` 변경(Security 리뷰). 승인 화면에 "N개 파일은 iCloud 를 통해 다른 기기에서도 삭제됩니다" 줄이 보이는지 대화상자·TTY·앱에서 확인.
 
 ### 9.5 Skill·MCP (M8)
 
@@ -582,6 +606,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | M7 재빌드 후 FDA 유지 | | |
 | `/Volumes/External` 행 재현(FDA 없음) | 해당 시 | 필수 |
 | iCloud 자리표시자 비다운로드 | | |
+| V17 “데스크탑 및 문서” 동기화 판정(M4) | | |
+| iCloud 휴지통 해제 V18~V21(M5, 08 §9.1) | | |
 
 ### 9.7 09 실기기 검증 항목(V1~V16)의 마일스톤 배정
 
@@ -589,8 +615,8 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 
 | 마일스톤 | V 항목 | 이 문서의 관련 절 |
 |---|---|---|
-| M4 | V1(FDA 프로브 정확도), V2(설정 패널 URL), V3(자식 core 가 앱의 FDA 를 따름), V7(FDA 와 iCloud), V9(`metadata_only`·`ephemeral` 열람 후 파일 미개방·QL 캐시), V16(복사된 DB 배너·승인 버튼 비활성) | §9.1, §9.3, F36 |
-| M5 | V8(`~/.Trash` 와 Finder 되돌려 놓기), V11(Secure Enclave 서명 승인 가능 여부) | §9.4, §4.1 `test_app_signature_verification` |
+| M4 | V1(FDA 프로브 정확도), V2(설정 패널 URL), V3(자식 core 가 앱의 FDA 를 따름), V7(FDA 와 iCloud), V9(`metadata_only`·`ephemeral` 열람 후 파일 미개방·QL 캐시), V16(복사된 DB 배너·승인 버튼 비활성), V17(“데스크탑 및 문서” 동기화 판정 — 실패 시 `root set --icloud-synced` 로 대체) | §9.1, §9.3, F36, §3.10 |
+| M5 | V8(`~/.Trash` 와 Finder 되돌려 놓기), V11(Secure Enclave 서명 승인 가능 여부), V18~V21(iCloud 휴지통 해제 근거 — 08 §9.1 의 네 조건, **두 Mac 각각**) | §9.4, §4.1, §3.10 |
 | M6 | V12(Vision 한국어 OCR) | M6 표 |
 | M7 | V4(헬퍼가 앱 FDA 를 따름), V5(재빌드 후 FDA 유지), V6(헬퍼 번들·알림 도메인), V10(활성화 정책 전환), V13(잠자기 보충 실행), V14(FDA 없는 예약 실행 제한 시간), V15(재빌드 후 SMAppService 상태·다른 서명의 실패 모습) | §9.1, §9.2 |
 
@@ -611,6 +637,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-CORE-007 | `test_fr_core_007_concurrent_scan_one_locked` |
 | FR-CORE-008 | §3.9 의 `test_fr_core_008_*` 전부, `test_exclude_globs_relative_to_root` |
 | 02 §8.1 | `test_doctor_device_mismatch_copied_db`(F36 a·b — host UUID 포함), `test_default_roots_never_under_volumes` |
+| 02 §5.3 root icloud | `test_root_icloud_override_precedence`, `test_root_icloud_assumed_default`(M1 `root add --icloud-synced`), `test_root_set_reevaluates_items`, `test_root_set_not_in_mcp`(M2) |
 | 02 §10.4 | `test_sandbox_home_outside_sandbox_rejected`(샌드박스인데 `DAYCLOSE_HOME` 이 밖이면 시작 거부 `E_SANDBOX_VIOLATION`, 아무 파일도 안 만듦), `test_sandbox_guard.py` |
 
 종료 기준 검증: pytest·ruff·mypy 녹색(CI 명령 §12) / FR-CORE-008(§3.9) / 루트 기준 상대 제외·겹치는 루트 처리(`test_exclude_globs_relative_to_root`, `test_fr_core_008_nested_roots_no_duplicates`) / 재스캔 이벤트 0(`test_fr_core_003_rescan_no_events`) / 1만 웜 스캔 ≤ 2초(`test_m1_warm_scan_10k`, 측정값 기록) / 실제 `~` 접근 0(§2 전체) / 계약 픽스처 4종 존재(`test_fixtures_regenerate_identically`).
@@ -669,7 +696,7 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | NFR-A11Y-001(키보드) | `testKeyboardOnlyGroupReview`, `testAccessibilityAudit` |
 | serve 프로토콜 | `test_serve_transcripts`, `CoreClientTests` |
 
-종료 기준 검증: 09 V1·V2·V3·V7·V9·V16(§9.7) 기기별 기록 / `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
+종료 기준 검증: 09 V1·V2·V3·V7·V9·V16·V17(§9.7) 기기별 기록 / `swift test` 녹색·모든 픽스처 디코딩(`FixtureDecodingTests`) / 보안·환자 항목 열람 후 캐시 파생물 0(`testMetadataOnlyNoPreviewNoCache`, `testEphemeralPreviewNotCached`, §9.3 수동) / 앱 코드 파일 변경 API 0(`test_no_mutation_in_swift.py`) / 실행 버튼 비활성(`testExecuteDisabledInMvp`).
 
 ### M5 — 안전 실행
 
@@ -682,10 +709,11 @@ hdiutil attach -nobrowse -mountpoint "$SANDBOX/vol/DCTESTVOL" "$SANDBOX/img/vol2
 | FR-EX-005 | `test_fr_ex_005_cross_volume_hash_verified`(`hdiutil`), F03~F05·F07·F19·F20 |
 | FR-EX-006 | F01~F06, F39, F40, `test_fr_ex_006_undo_roundtrip`, `prop_executor`(§5.1) |
 | FR-EX-007 | `test_fr_ex_007_audit_list_channel_no_paths` |
-| FR-AB-001 | `test_fr_ab_001_archive_root_layout_year_month`(`<root>/<YYYY>/<MM>/<이름>`, 충돌 시 08 규칙), `test_fr_ab_001_archive_decision_rejects_dest`, `test_fr_ab_001_archive_root_unset_missing`, `test_fr_ab_001_cross_volume_archive_hash_verified`(`hdiutil`), `test_fr_ab_001_archive_undo_restores`, F37·F38 |
+| FR-EX-008 | §3.10 의 `test_fr_ex_008_*`, `test_icloud_propagates_check_constraint`, `test_icloud_gate_constant_false_without_record`, `test_config_allow_trash_owner_only` |
+| FR-AB-001 | `test_archive_unencrypted_warns`, `test_fr_ab_001_archive_root_layout_year_month`(`<root>/<YYYY>/<MM>/<이름>`, 충돌 시 08 규칙), `test_fr_ab_001_archive_decision_rejects_dest`, `test_fr_ab_001_archive_root_unset_missing`, `test_fr_ab_001_cross_volume_archive_hash_verified`(`hdiutil`), `test_fr_ab_001_archive_undo_restores`, F37·F38 |
 | FR-VR-007 | `testApproveBindsDisplayedHash`, `testApplyProgressAndUndo` |
 
-종료 기준 검증: 09 V8·V11(§9.7) / 장애 주입 스위트 F01~F40 녹색, §4.1 승인 무결성 테스트 전부, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
+종료 기준 검증: 09 V8·V11·V18~V21(§9.7, 두 Mac) / §3.10 FR-EX-008 테스트 전부(게이트 상수는 V18~V21 기록이 없으면 `False` 유지) / 장애 주입 스위트 F01~F40 녹색, §4.1 승인 무결성 테스트 전부, 모든 시나리오 `assert_no_loss` / 정적 검사 executor 외 0, `os.unlink`·`os.remove` 1곳 / §9.4 수동 + 08 체크리스트 서명.
 
 ### M6 — AI + 학습
 
