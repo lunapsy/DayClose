@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from hypothesis import settings
 
+from dayclose.collect import fs as fs_collector
 from dayclose.common import clock, paths
 from dayclose.plan.approval import AGENT_ENV_MARKERS
 
@@ -83,6 +84,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sandbox
     monkeypatch.setattr(os.path, "expanduser", _expanduser)
     yield Sandbox(root=root, home=root / "home", user=user)
     clock.set_clock(None)
+    fs_collector.flags_hook = None
     paths.probe_stat = paths._default_probe_stat
 
 

@@ -11,6 +11,7 @@ from typing import Any, NoReturn
 from dayclose import __version__, api
 from dayclose.api.root_cmds import ICLOUD_MODES, ROOT_KINDS
 from dayclose.api.runtime import CHANNELS, LOG_LEVELS, Options
+from dayclose.api.scan_cmds import TRIGGERS
 from dayclose.common import envelope
 from dayclose.common.errors import UsageError
 
@@ -74,6 +75,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--icloud-synced", choices=list(ICLOUD_MODES))
     leaf(root, "remove", "root.remove").add_argument("root_id")
 
+    scan = top.add_parser("scan", parents=[g]).add_subparsers(dest="verb", parser_class=_Parser)
+    p = leaf(scan, "run", "scan.run")
+    p.add_argument("--root", dest="root_ids", action="append")
+    p.add_argument("--collectors")
+    p.add_argument("--trigger", choices=list(TRIGGERS))
+    _list_flags(leaf(scan, "list", "scan.list"))
+    leaf(scan, "show", "scan.show").add_argument("run_id")
+
+    change = top.add_parser("change", parents=[g]).add_subparsers(dest="verb", parser_class=_Parser)
+    p = leaf(change, "list", "change.list")
+    p.add_argument("--run", dest="run_id")
+    p.add_argument("--since")
+    p.add_argument("--event")
+    p.add_argument("--root", dest="root_id")
+    _list_flags(p)
     return parser
 
 
@@ -190,6 +206,27 @@ def _kv(data: dict[str, Any]) -> list[str]:
     return [f"{k}: {_clean(v)}" for k, v in data.items() if not isinstance(v, (dict, list))]
 
 
+def _human_scan(d: dict[str, Any]) -> list[str]:
+    status = {
+        "completed": "완료",
+        "partial": "부분 완료",
+        "failed": "실패",
+        "running": "진행 중",
+        "interrupted": "중단",
+    }.get(d["status"], d["status"])
+    st = d.get("stats", {})
+    secs = (d.get("duration_ms") or 0) / 1000
+    lines = [
+        f"스캔 {d['run_id']} ({status}, {secs:.1f}초): 새 파일 {st.get('created', 0)} · "
+        f"수정 {st.get('modified', 0)} · 삭제 {st.get('deleted', 0)} · "
+        f"이동 {st.get('moved', 0)}"
+    ]
+    for r in d.get("roots", []):
+        if r["status"] != "ok":
+            lines.append(f"  {r['root_id']}: {r['status']}")
+    return lines
+
+
 _RENDER: dict[str, Callable[[dict[str, Any]], list[str]]] = {
     "core.version": lambda d: [
         f"DayClose core {d['core_version']} (계약 v{d['contract_version']}, "
@@ -212,6 +249,21 @@ _RENDER: dict[str, Callable[[dict[str, Any]], list[str]]] = {
         ("루트 등록: " if d["created"] else "이미 등록됨: ")
         + f"{d['root']['id']} {d['root']['display_path']}"
     ],
+    "scan.run": _human_scan,
+    "scan.show": _human_scan,
+    "scan.list": lambda d: _render_list(
+        d, [("run_id", "RUN"), ("started_at", "시작"), ("status", "상태"), ("trigger", "트리거")]
+    ),
+    "change.list": lambda d: _render_list(
+        d,
+        [
+            ("id", "ID"),
+            ("event", "변경"),
+            ("kind", "종류"),
+            ("old_path", "이전"),
+            ("new_path", "새 경로"),
+        ],
+    ),
 }
 
 

@@ -35,6 +35,10 @@ M1_COMMANDS = {
     "root.list",
     "root.add",
     "root.remove",
+    "scan.run",
+    "scan.list",
+    "scan.show",
+    "change.list",
 }
 
 
@@ -65,6 +69,13 @@ def test_fr_core_004_every_command_envelope(cli: RunCli, sandbox: Sandbox) -> No
         ("root.add", ("root", "add", str(dl / "x"), "--kind", "downloads"), "E_NOT_FOUND"),
         ("root.list", ("root", "list"), None),
         ("root.list", ("root", "list", "--cursor", "zz"), "E_USAGE"),
+        ("scan.run", ("scan", "run"), None),
+        ("scan.run", ("scan", "run", "--root", "itm_1"), "E_USAGE"),
+        ("scan.list", ("scan", "list"), None),
+        ("scan.show", ("scan", "show", "run_1"), None),
+        ("scan.show", ("scan", "show", "run_77"), "E_NOT_FOUND"),
+        ("change.list", ("change", "list"), None),
+        ("change.list", ("change", "list", "--since", "yesterday"), "E_USAGE"),
         ("root.remove", ("root", "remove", "root_1"), None),
         ("root.remove", ("root", "remove", "root_1"), "E_NOT_FOUND"),
     ]
@@ -84,7 +95,7 @@ def test_fr_core_004_every_command_envelope(cli: RunCli, sandbox: Sandbox) -> No
 
 
 def test_usage_error_is_json(cli: RunCli) -> None:
-    for argv in (("root", "list", "--frobnicate"), ("bogus", "verb"), ()):
+    for argv in (("scan", "run", "--frobnicate"), ("bogus", "verb"), ()):
         res = cli(*argv)
         env = res.envelope
         _validate(env)
@@ -97,6 +108,8 @@ def test_fixtures_are_schema_valid() -> None:
     names = sorted(p.name for p in FIXTURES.glob("*.json"))
     assert {
         "core.version.ok.json",
+        "scan.run.ok.json",
+        "change.list.ok.json",
         "error.E_NOT_INITIALIZED.json",
         "root.list.ok.json",
         "error.E_SANDBOX_VIOLATION.json",

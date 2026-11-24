@@ -88,6 +88,14 @@ def generate(workdir: Path) -> dict[str, dict[str, Any]]:
     out["core.version.ok"] = _run(sandbox, "version")
     _run(sandbox, "root", "add", str(downloads), "--kind", "downloads")
     out["root.list.ok"] = _run(sandbox, "root", "list")
+    _run(sandbox, "scan", "run")
+    new = downloads / "a.txt"
+    new.write_bytes(b"hi\n")
+    os.utime(new, (FILE_TIME, FILE_TIME))
+    out["scan.run.ok"] = _run(sandbox, "scan", "run")
+    new.rename(downloads / "b.txt")
+    _run(sandbox, "scan", "run")
+    out["change.list.ok"] = _run(sandbox, "change", "list")
     return {name: normalize(env, str(sandbox)) for name, env in out.items()}
 
 
